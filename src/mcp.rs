@@ -138,9 +138,10 @@ fn tool_err(e: CliError) -> ToolError {
     }
 }
 
-/// Why the read was refused, without the CLI's own remedy (`— run `<built-in function bin> auth
-/// login``): the fix names the one command to ask for, and a second, often
-/// different, command in the same error would leave the user to pick.
+/// Why the read was refused, without the CLI's own remedy (a closing "run
+/// `sfi auth login`"): the fix names the one command to ask for, and a
+/// second, often different, command in the same error would leave the user
+/// to pick.
 fn auth_reason(m: &str) -> &str {
     [" — run `", "; run `"]
         .iter()
