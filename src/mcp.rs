@@ -133,9 +133,21 @@ impl<S: Source> SofiTools<S> {
 /// login.
 fn tool_err(e: CliError) -> ToolError {
     match e {
-        CliError::Auth(m) => ToolError::auth(m).with_fix(SIGN_IN),
+        CliError::Auth(m) => ToolError::auth(auth_reason(&m)).with_fix(SIGN_IN),
         other => other.into(),
     }
+}
+
+/// Why the read was refused, without the CLI's own remedy (a closing "run
+/// `sfi auth login`"): the fix names the one command to ask for, and a
+/// second, often different, command in the same error would leave the user
+/// to pick.
+fn auth_reason(m: &str) -> &str {
+    [" — run `", "; run `"]
+        .iter()
+        .filter_map(|sep| m.find(sep))
+        .min()
+        .map_or(m, |cut| &m[..cut])
 }
 
 fn is_zero(n: &usize) -> bool {

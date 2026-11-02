@@ -1,7 +1,7 @@
 [package]
 name = "sofi-cli"
 description = "Read-only CLI for SoFi Checking & Savings (piekstra-cli/1). Unofficial, community-documented API."
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 # pk-cli-mcp (rmcp) needs 1.88.
 rust-version = "1.88"
