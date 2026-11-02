@@ -1,0 +1,68 @@
+{
+  "data": {
+    "me": {
+      "accounts": [
+        {
+          "id": "1111",
+          "transactions": {
+            "list": [
+              {
+                "cursor": "Y3Vyc29yOjE=",
+                "transaction": {
+                  "id": "00000000-0000-4000-8000-000000000010",
+                  "amount": {
+                    "unformatted": "-42.50"
+                  },
+                  "createdDate": {
+                    "mmddyyyy": "07282026"
+                  },
+                  "description": "Sample Grocery Store",
+                  "displayType": "WITHDRAWAL",
+                  "expandedFields": [
+                    {
+                      "title": "Merchant",
+                      "value": "Sample Grocery Store"
+                    }
+                  ],
+                  "state": "POSTED"
+                }
+              },
+              {
+                "cursor": "Y3Vyc29yOjI=",
+                "transaction": {
+                  "id": "00000000-0000-4000-8000-000000000011",
+                  "amount": {
+                    "unformatted": "1500.00"
+                  },
+                  "createdDate": {
+                    "mmddyyyy": "07152026"
+                  },
+                  "description": "Sample Employer Payroll",
+                  "displayType": "DEPOSIT",
+                  "expandedFields": [],
+                  "state": "POSTED"
+                }
+              },
+              {
+                "cursor": "Y3Vyc29yOjM=",
+                "transaction": {
+                  "id": "00000000-0000-4000-8000-000000000012",
+                  "amount": {
+                    "unformatted": "-9.99"
+                  },
+                  "createdDate": {
+                    "mmddyyyy": "07302026"
+                  },
+                  "description": "Sample Streaming Service",
+                  "displayType": "WITHDRAWAL",
+                  "expandedFields": [],
+                  "state": "PENDING"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

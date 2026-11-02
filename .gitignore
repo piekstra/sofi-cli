@@ -1,0 +1,29 @@
+# Build artifacts
+/target
+**/*.rs.bk
+
+# Environment / editor
+.env
+.DS_Store
+.idea/
+.vscode/
+
+# Credentials must never be committed
+*.pem
+*.key
+secrets.*
+
+# Raw provider captures. A capture from SoFi carries real account numbers,
+# balances, and transactions, and a statement link may be a live pre-signed
+# credential. Scrub into tests/fixtures/ by hand; never commit the raw file.
+raw-*.json
+capture-*.json
+*.raw.json
+
+# Downloaded statements / tax documents
+*.pdf
+
+# Local, machine-specific notes: account particulars, anything that
+# identifies whose install this is.
+*.local.md
+NOTES.local.md

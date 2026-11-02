@@ -1,0 +1,16 @@
+[
+  {
+    "statementDate": "2026-07-31",
+    "accountNumber": null,
+    "statementType": "COMBINED",
+    "documentId": "00000000-0000-4000-8000-000000000030",
+    "description": "July 2026 Statement"
+  },
+  {
+    "statementDate": "2026-06-30",
+    "accountNumber": null,
+    "statementType": "COMBINED",
+    "documentId": "00000000-0000-4000-8000-000000000031",
+    "description": "June 2026 Statement"
+  }
+]

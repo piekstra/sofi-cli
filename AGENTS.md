@@ -1,0 +1,167 @@
+# AGENTS.md — working agreement for `sofi-cli`
+
+Canonical agent guide for this repo. `CLAUDE.md` is a thin pointer here.
+
+## What this is
+
+`sfi` is a **read-only** CLI over SoFi's **unofficial, thinly
+community-documented** private API — the one its own web app uses. SoFi holds
+the household's primary cash accounts (checking + savings), and this CLI
+exists to feed the tax/money-optimizer pipeline:
+
+- **cash balances for the emergency-fund analysis** — `net-worth` emits the
+  family's `net-worth/v1` DTO (same shape as `rhd net-worth` and
+  `m1f net-worth`), one provider-reported balance per account plus the
+  rollup, so an asset-capturing consumer needs one registry row, not
+  per-provider glue;
+- **YTD interest (1099-INT raw material)** — `interest list` and
+  `interest ytd`;
+- **transactions for spending/burn-rate ingestion** — `transactions list
+  --since --until`;
+- **statements and tax forms** — `documents list` / `documents download`
+  (the `documents/v1` profile).
+
+Conforms to `piekstra-cli/1` (see `~/Dev/cli-common/DESIGN.md` and
+`conformance.md`). Shared behavior comes from the `pk-cli-*` crates pinned to
+tag **v0.11.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
+keychain, config, self-update, the `documents/v1` DTOs and its
+`verify`/`fs_safe` download hygiene, and `pk-cli-browser` for the browser
+sign-in).
+
+## Build / test / lint
+
+```console
+$ make verify     # fmt-check + clippy -D warnings + test + smoke — the CI gate
+$ make dev        # debug build, re-signed for stable keychain grants
+$ make install    # installs to ~/.cargo/bin and re-signs
+```
+
+Tests are **fully offline**: no network, no keychain, no credentials. Keep
+them that way (see "Auth: browser cookie harvest (the supported path)" below).
+
+## Layout
+
+| Path | Owns |
+| --- | --- |
+| `src/main.rs` | clap tree, dispatch, exit-code mapping |
+| `src/config.rs` | non-secret settings (username, default account) |
+| `src/client.rs` | HTTP, the login/MFA dance, session cookies, downloads |
+| `src/browser.rs` | `auth login --browser` on `pk-cli-browser`: what is read, the confirm read, the GraphQL recipe |
+| `src/commands/*.rs` | one module per command group |
+| `tests/cli_surface.rs` | black-box `assert_cmd` surface tests |
+| `tests/fixture_shapes.rs` | contract tests over `tests/fixtures/` |
+| `docs/api.md` | the API as we understand it, **and the traps** |
+
+## Non-negotiables
+
+- **Read-only, enforced in code.** No transfers, no payments, no settings
+  changes. `sfi api` accepts `GET` only and exits 2 otherwise. If a write is
+  ever added, the README's read-only claim changes in the *same* commit.
+- **`--json` on every command**, exactly one DTO per invocation, `schema`
+  tagged. Human output to stdout, diagnostics to stderr.
+- **Exit codes**: 0 ok · 2 usage · 3 auth · 4 not found · 5 upstream ·
+  6 confirmation required.
+- **Validate args before touching keychain or network**, so `--help` and bad
+  input never prompt, hang, or hit the provider.
+- **Secrets only** from the OS keychain (`piekstra.sfi`), stdin, or a named
+  env var — never argv, never a file, never a log.
+- **ISO `YYYY-MM-DD`** on every date flag.
+
+## Honesty rules (this is an unofficial API; it lies)
+
+These are the ones that cost real debugging time elsewhere in the family:
+
+- **Never report success from a status code alone.** A `200` carrying an HTML
+  login page is an auth failure. Treat "HTML where JSON was expected" and
+  "landed on a login URL" as `CliError::Auth`, not success.
+- **A download is not a document until it matches its declared filetype.**
+  `%PDF` magic for a PDF; none of the known failure shapes — a JSON error, an
+  S3 XML error, HTML where it wasn't promised. Check before writing and
+  before reporting bytes written: an expired pre-signed URL answers `200`
+  with XML or HTML.
+- **Chase the small anomaly.** A blank field in an otherwise-working response
+  is usually the failure reporting itself.
+- **One login attempt, then stop.** No retry loop around authentication ever.
+  A loop against an MFA challenge is how a bank account gets locked.
+- **Almost everything here is UNVERIFIED-LIVE.** SoFi's private API is only
+  thinly community-documented, and no live capture session has confirmed the
+  endpoint paths yet. `docs/api.md` labels every endpoint; when a live
+  session verifies (or corrects) one, move the label and say how.
+
+## Auth: browser cookie harvest (the supported path)
+
+SoFi's login is Auth0 + Cloudflare + ThreatMetrix + SMS MFA, and the plausible
+JSON login endpoint **404s live** (confirmed 2026-08-24, docs/api.md §2.6).
+There is nothing to script. So `sfi auth login --browser` opens a real Chrome,
+the **owner** signs in by hand, and the CLI reads the session cookies over the
+DevTools protocol and stores them in the keychain (`session`).
+
+- **Owner-present only, and a live login costs an SMS code.** Never run
+  `auth login --browser` from automation; it needs a human at the keyboard.
+- **The mechanism is cli-common's `pk-cli-browser`; `src/browser.rs` is only
+  SoFi's side of it.** The crate owns finding and launching Chrome
+  (`SFI_CHROME`), the `0700` scratch profile, Ctrl-C, closing the tab and the
+  teardown. `browser_capture` says what to read; the confirm hook, the
+  validation read and the recipe derivation are sfi's. Don't re-embed
+  DevTools code here: a capture the crate can't express is a cli-common
+  change.
+- The capture reads only `www.sofi.com` pages (never the Auth0 login host),
+  gates on the `SOFI` bearer cookie, and reads the whole `sofi.com` jar (both
+  `login.sofi.com` and `www.sofi.com` — docs/api.md §2.5);
+  `Session::from_pairs` keeps the four session cookies. Before the tab closes
+  it validates against a **swappable** read (`SFI_VALIDATE_PATH`, default the
+  accounts collection); a 404 there doesn't block the login, since the read
+  endpoints are themselves unverified.
+- The GraphQL header recipe comes from the first `/bff/graphql` request a
+  `www.sofi.com` page makes; the tab is held open up to 25 s for one. Only
+  header names and the CSRF cookie's name are stored.
+- **SoFi's side is tested offline on hand-built captures.** `pk-cli-browser`'s
+  `test-util` feature (a `[dev-dependencies]` entry at the same tag, so the
+  shipped binary is built without it) gives `Captured::for_test`,
+  `JarCookie::for_test` and `CapturedRequest::for_test`. The confirm hook is
+  `confirm_with(candidate, quiet, path, client)`, with `confirm` passing
+  `&validation_path()` and `Sofi::new`; a test passes a literal path and
+  `|| Sofi::with_base(<loopback>)`, so every `Confirm` answer is exercised
+  without SoFi and without reading the environment. Keep both pins on one
+  tag.
+- **A test never depends on an ambient env var.** Code that reads one splits
+  into a pure function taking the value (`validation_path_from`) and a thin
+  caller that fills it from the environment; tests call the pure one. The
+  only env var a test reads is `SFI_TEST_KEYCHAIN`, the deliberate opt-in
+  for the keychain surface tests. Nothing mutates the process environment:
+  `clippy.toml` disallows `std::env::set_var` and `std::env::remove_var`, so
+  `make lint` fails on a new use. A subprocess test may pass `.env(..)` to
+  the child it spawns.
+- The **retained password/`--code` flow is dead-live** — kept only for the day
+  a scriptable endpoint exists. Don't try to make it work; use `--browser`.
+- **Read-endpoint status:** accounts, net-worth, `interest ytd`, and
+  `documents list` are **LIVE-VERIFIED** (2026-08-24); **transactions
+  (`/bff/graphql`) answer live** (2026-08-31, after the header-recipe fix for
+  the first session's 403). Its `createdDate.mmddyyyy` is **unseparated
+  `MMDDYYYY`** — a slashed-only parser left every live row undated until
+  2026-10-01. `documents download` is unprobed. When a session verifies (or corrects) an endpoint, move its
+  label in docs/api.md and say how.
+- **The APY string keeps its trailing `%`** (`"3.10%"`) — pass `formattedApy`
+  through verbatim; never strip or reformat it (a fixture test pins this).
+- **`interest ytd` is an estimate, not a 1099-INT number** — it reports the
+  provider's `estimatedInterestThisYear` (`source: provider_estimate`), and
+  whether that is YTD-so-far or a full-year projection is unresolved
+  (docs/api.md §3.2/§7); the transactions feed will settle it.
+- **Ask before spending a live login.** Prefer the offline fixtures.
+
+## Fixtures
+
+`tests/fixtures/` is **synthetic** — every value is a dummy, and no captured
+file is ever committed. Structure provenance is recorded in
+`tests/fixtures/README.md` with citations to the community sources each file
+models. If you ever capture a real response to check a shape, scrub it before
+it reaches the working tree and never commit the raw file (a statement link
+may be a live pre-signed credential). A test enforces the scrubbing policy
+positively: identity-bearing fields must match a known dummy shape.
+
+## Definition of done
+
+`make verify` green, CI green (or mirrored locally when Actions minutes are
+capped), `docs/api.md` matching reality (including what is still
+**UNVERIFIED-LIVE**), `--json` and human output in sync, and no secrets or
+personal data anywhere in the diff — fixtures included.

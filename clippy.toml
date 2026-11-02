@@ -1,0 +1,10 @@
+# Tests never mutate the process environment: tests run in parallel threads
+# of one process, so a set or removed variable leaks into every other test.
+# Code that reads an env var is split into a pure function that takes the
+# value, and a caller that fills it from the environment (e.g.
+# `validation_path_from` / `validation_path`); tests call the pure one. A
+# subprocess test may still pass `.env(..)` to the child it spawns.
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "don't mutate the process environment; make a pure function that takes the value, and fill it from the env in the caller (see validation_path_from)" },
+    { path = "std::env::remove_var", reason = "don't mutate the process environment; make a pure function that takes the value, and fill it from the env in the caller (see validation_path_from)" },
+]

@@ -1,0 +1,47 @@
+{
+  "data": {
+    "me": {
+      "accounts": [
+        {
+          "id": "2222",
+          "transactions": {
+            "list": [
+              {
+                "cursor": "aW50ZXJlc3Q6MQ==",
+                "transaction": {
+                  "id": "00000000-0000-4000-8000-000000000020",
+                  "amount": {
+                    "unformatted": "34.16"
+                  },
+                  "createdDate": {
+                    "mmddyyyy": "07312026"
+                  },
+                  "description": "Interest earned",
+                  "displayType": "INTEREST",
+                  "expandedFields": [],
+                  "state": "POSTED"
+                }
+              },
+              {
+                "cursor": "aW50ZXJlc3Q6Mg==",
+                "transaction": {
+                  "id": "00000000-0000-4000-8000-000000000021",
+                  "amount": {
+                    "unformatted": "31.02"
+                  },
+                  "createdDate": {
+                    "mmddyyyy": "06302026"
+                  },
+                  "description": "Interest earned",
+                  "displayType": "INTEREST",
+                  "expandedFields": [],
+                  "state": "POSTED"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

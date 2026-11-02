@@ -1,0 +1,57 @@
+name: release
+
+# Cut a release by pushing a tag like `v0.1.0`. One Linux job and ONE macOS
+# job (Apple Silicon, which cross-compiles the Intel target — the macOS SDK is
+# universal). Jobs are independent (fail-fast: false) and each attaches its own
+# assets, so a slow or dead macOS queue can never block the Linux assets and
+# only one macOS runner is ever needed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: apple (aarch64 + x86_64)
+            targets: "aarch64-apple-darwin x86_64-apple-darwin"
+          - os: ubuntu-latest
+            name: linux x86_64
+            targets: "x86_64-unknown-linux-gnu"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      # The tag names the release/assets; Cargo.toml's version is baked into
+      # the binary (`sfi --version`/`info`). If they disagree, self-update and
+      # users see a binary that lies about its version. Fail the job before
+      # building rather than shipping a mislabeled asset.
+      - name: Verify the tag matches Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          grep -q "^version = \"${tag}\"$" Cargo.toml \
+            || { echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version"; exit 1; }
+      - name: Build and package each target
+        run: |
+          for t in ${{ matrix.targets }}; do
+            rustup target add "$t"
+            cargo build --release --target "$t"
+            tar -C "target/$t/release" -czf "sfi-$t.tar.gz" sfi
+            shasum -a 256 "sfi-$t.tar.gz" > "sfi-$t.tar.gz.sha256"
+          done
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sfi-*.tar.gz
+            sfi-*.tar.gz.sha256

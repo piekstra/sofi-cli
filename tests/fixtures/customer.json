@@ -1,0 +1,30 @@
+{
+  "firstName": "Sample",
+  "lastName": "Sampleton",
+  "customerNumber": "00000000",
+  "onboardingStatus": "COMPLETE",
+  "phoneNumber": "+10000000000",
+  "email": "user@example.com",
+  "sofiId": "00000000-0000-4000-8000-000000000001",
+  "twoFactor": {
+    "twoFactorType": "SMSV1",
+    "twoFactorData": "***0000"
+  },
+  "addresses": [
+    {
+      "line1": "1 Sample Street",
+      "line2": null,
+      "city": "Sampleton",
+      "state": "CA",
+      "postalCode": "00000",
+      "country": "US",
+      "addressType": "PRIMARY"
+    }
+  ],
+  "passedKyc": true,
+  "partner": "SOFI",
+  "partnerV2": "BANK",
+  "accountFunded": true,
+  "accountFundedDate": "2024-03-16",
+  "grandfatheredUser": false
+}

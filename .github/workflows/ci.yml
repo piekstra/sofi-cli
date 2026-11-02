@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A new push to the same ref makes the older run's result worthless — don't pay
+# for it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: fmt / clippy / test / build
+    # Linux, not macOS. This is a private repo, so runner minutes are billed
+    # directly and macOS costs ~10x Linux. Nothing in the gate is
+    # platform-specific: the whole test suite is offline (no network, no
+    # keychain), and the one OS-coupled dependency — `keyring` via
+    # pk-cli-secrets — has a Linux backend that compiles against libdbus, so
+    # the build and clippy still typecheck the keychain code path here.
+    #
+    # COVERAGE GAP, deliberate: the *runtime* behaviour of the apple-native
+    # keychain backend (Security.framework prompts, "Always Allow" grants
+    # scoped to the code signature) is never exercised in CI. It's covered by
+    # local dogfooding through the signed binary instead.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install keyring build deps
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      # `make verify` is the local gate (fmt-check, lint, test, smoke), so CI
+      # runs the exact same target rather than hand-duplicating a subset — the
+      # two gates can't drift, and `smoke` (which exercises the built binary)
+      # actually runs here. The dev-signing step in the Makefile no-ops on
+      # Linux (the helper is absent), leaving an ad-hoc-signed binary, which is
+      # fine for the smoke checks.
+      - run: make verify
+
+  security:
+    name: audit / deny / secrets
+    runs-on: ubuntu-latest
+    # gitleaks-action calls the PR API to enumerate the commits to scan, and
+    # cargo-audit posts advisory annotations. Without these the job dies with
+    # "Resource not accessible by integration" — but only on pull_request
+    # events, since a push carries its commits in the payload. Declared here so
+    # the first PR against this repo doesn't fail for a permissions reason
+    # dressed up as a secret-scanning failure.
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+      checks: write # rustsec/audit-check publishes a check run; without this it dies with "Resource not accessible by integration"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo-audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

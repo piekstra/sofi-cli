@@ -1,0 +1,55 @@
+[package]
+name = "sofi-cli"
+description = "Read-only CLI for SoFi Checking & Savings (piekstra-cli/1). Unofficial, community-documented API."
+version = "0.1.0"
+edition = "2021"
+# pk-cli-browser (tungstenite 0.30) needs 1.85.
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/piekstra/sofi-cli"
+homepage = "https://github.com/piekstra/sofi-cli"
+authors = ["piekstra"]
+publish = false
+
+[[bin]]
+name = "sfi"
+path = "src/main.rs"
+
+[dependencies]
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+# `sfi auth login --browser`: the scratch-profile Chrome the owner signs in
+# through, and the session read back over the DevTools protocol (src/browser.rs).
+pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps JSON object key order at insertion order, which is what
+# SPEC v1 §1.4 promises for both `output::kv` blocks and `table_view` columns.
+serde_json = { version = "1", features = ["preserve_order"] }
+# No `cookies` feature: session cookies are handled by hand — read from a
+# logged-in browser's jar (`browser.rs`, through pk-cli-browser) or from a login
+# response's Set-Cookie lines, and replayed as an explicit Cookie header on
+# every later read. A reqwest cookie jar would be a second, invisible home for
+# the state.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+# `test-util` builds a `Captured` by hand, so src/browser.rs's unit tests run
+# the confirm hook and the recipe step without a browser. Dev-only, and at the
+# dependency's tag so both name one crate: the shipped binary is built without
+# it (`cargo tree -e normal,features -i pk-cli-browser` shows no test-util).
+pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0", features = ["test-util"] }
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

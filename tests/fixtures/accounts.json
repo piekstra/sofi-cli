@@ -1,0 +1,83 @@
+{
+  "partyId": "00000000-0000-4000-8000-000000000001",
+  "customerCombinedBalance": {
+    "available": "12750.50",
+    "ledger": "12730.50"
+  },
+  "accounts": [
+    {
+      "id": "1111",
+      "type": "CHECKING",
+      "number": "****1234",
+      "routingNumber": "000000000",
+      "nickname": "Sample Checking",
+      "isFunded": true,
+      "balance": {
+        "available": "2500.00",
+        "ledger": "2480.00"
+      },
+      "combinedBalance": {
+        "available": "12750.50",
+        "ledger": "12730.50"
+      },
+      "owners": [
+        {
+          "partyId": "00000000-0000-4000-8000-000000000001",
+          "role": "PRIMARY"
+        }
+      ],
+      "formattedApy": "0.50%",
+      "formattedBaseApy": "0.50%",
+      "interestRate": "0.005",
+      "formattedInterestRate": "0.50%",
+      "interestEffectiveDate": "2026-01-01",
+      "interestEarnedLifetime": "45.67",
+      "estimatedInterestThisMonth": "1.05",
+      "estimatedInterestThisYear": "8.40",
+      "status": "ACTIVE",
+      "isRestricted": false,
+      "openDate": "2024-03-15",
+      "closeDate": null,
+      "partner": "SOFI",
+      "currency": "USD",
+      "isOpen": true
+    },
+    {
+      "id": "2222",
+      "type": "SAVING",
+      "number": "****5678",
+      "routingNumber": "000000000",
+      "nickname": "Sample Savings",
+      "isFunded": true,
+      "balance": {
+        "available": "10250.50",
+        "ledger": "10250.50"
+      },
+      "combinedBalance": {
+        "available": "12750.50",
+        "ledger": "12730.50"
+      },
+      "owners": [
+        {
+          "partyId": "00000000-0000-4000-8000-000000000001",
+          "role": "PRIMARY"
+        }
+      ],
+      "formattedApy": "3.10%",
+      "formattedBaseApy": "3.10%",
+      "interestRate": "0.0310",
+      "formattedInterestRate": "3.10%",
+      "interestEffectiveDate": "2026-01-01",
+      "interestEarnedLifetime": "612.34",
+      "estimatedInterestThisMonth": "34.16",
+      "estimatedInterestThisYear": "241.90",
+      "status": "ACTIVE",
+      "isRestricted": false,
+      "openDate": "2024-03-15",
+      "closeDate": null,
+      "partner": "SOFI",
+      "currency": "USD",
+      "isOpen": true
+    }
+  ]
+}
