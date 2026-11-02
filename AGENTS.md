@@ -19,11 +19,12 @@ exists to feed the tax/money-optimizer pipeline:
 - **transactions for spending/burn-rate ingestion** — `transactions list
   --since --until`;
 - **statements and tax forms** — `documents list` / `documents download`
-  (the `documents/v1` profile).
+  (the `documents/v1` profile);
+- **the same reads for Claude** — `sfi mcp` (see "MCP tools" below).
 
 Conforms to `piekstra-cli/1` (see `~/Dev/cli-common/DESIGN.md` and
 `conformance.md`). Shared behavior comes from the `pk-cli-*` crates pinned to
-tag **v0.11.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
+tag **v0.14.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
 keychain, config, self-update, the `documents/v1` DTOs and its
 `verify`/`fs_safe` download hygiene, and `pk-cli-browser` for the browser
 sign-in).
@@ -48,8 +49,11 @@ them that way (see "Auth: browser cookie harvest (the supported path)" below).
 | `src/client.rs` | HTTP, the login/MFA dance, session cookies, downloads |
 | `src/browser.rs` | `auth login --browser` on `pk-cli-browser`: what is read, the confirm read, the GraphQL recipe |
 | `src/commands/*.rs` | one module per command group |
+| `src/mcp.rs` | `sfi mcp`: the MCP tools over a `Source` seam |
+| `packaging/mcpb/` | the Claude Desktop extension manifest |
 | `tests/cli_surface.rs` | black-box `assert_cmd` surface tests |
 | `tests/fixture_shapes.rs` | contract tests over `tests/fixtures/` |
+| `tests/mcp_stdio.rs`, `tests/packaging.rs` | `sfi mcp` over stdio; the `.mcpb` manifest against the binary |
 | `docs/api.md` | the API as we understand it, **and the traps** |
 
 ## Non-negotiables
@@ -148,6 +152,45 @@ DevTools protocol and stores them in the keychain (`session`).
   whether that is YTD-so-far or a full-year projection is unresolved
   (docs/api.md §3.2/§7); the transactions feed will settle it.
 - **Ask before spending a live login.** Prefer the offline fixtures.
+
+## MCP tools
+
+`sfi mcp` (src/mcp.rs) serves four read-only tools under cli-common's MCP
+profile (DESIGN.md §1.9): `sofi_balances` (the `net-worth` reading),
+`sofi_transactions` (settled transactions over a date range),
+`sofi_interest` (the `interest ytd` figures, by account) and
+`sofi_documents` (statements, listed, never downloaded). They read through
+the `Source` trait; `LiveSource` wraps the same `Ctx` and fetchers the
+commands use (`accounts::fetch`, `transactions::fetch_entries`,
+`documents::fetch_rows`), one read at a time, since `Sofi` paces its
+requests and is not `Sync`. The tools never sign in: an auth error asks the
+user to run `sfi auth login --browser` in a terminal (the profile's standard
+remedy names plain `auth login`, whose endpoint is dead).
+
+- Tests: `src/mcp/tests.rs` runs every tool in process over the fixtures
+  through a fixture `Source` and cli-common's conformance helper;
+  `tests/mcp_stdio.rs` drives the binary over stdio without reading the
+  keychain; `tests/packaging.rs` holds `packaging/mcpb/manifest.json` to the
+  binary.
+- Budget: the definitions stay under 8,000 characters together
+  (`the_definitions_stay_small` prints each size). Shorten a description
+  before adding a field.
+- To see the sign-in error from the installed binary without opening the
+  real session, set `SFI_KEYCHAIN_SERVICE` to a service that holds nothing:
+  a missing keychain item is read without a prompt and fails as "not logged
+  in". The variable only renames which entry is read; it never carries a
+  session.
+
+## Releases
+
+Push a `v*` tag whose version matches `Cargo.toml` and
+`packaging/mcpb/manifest.json` (`.github/workflows/release.yml` refuses a
+mismatch). The workflow builds `sfi-<target>.tar.gz` for both Apple targets,
+`x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` (the names
+`self-update` expects), plus `sfi-<version>.mcpb`, the Claude Desktop
+extension, which takes no settings and reads the keychain session. A pull
+request that changes the workflow, `packaging/`, `Cargo.toml` or
+`Cargo.lock` runs the same builds as a dry run.
 
 ## Fixtures
 

@@ -1,0 +1,61 @@
+{
+  "manifest_version": "0.3",
+  "name": "sfi",
+  "display_name": "SoFi (sfi)",
+  "version": "0.2.0",
+  "description": "Read-only access to your own SoFi Checking & Savings balances, transactions, interest and statements, through the open-source sfi CLI.",
+  "long_description": "Ask Claude about your SoFi Checking & Savings: what each account holds and their total, what you spent and received over a period, how much interest a year paid (the 1099-INT figure), and which monthly statements exist. Four read-only tools, sofi_balances, sofi_transactions, sofi_interest and sofi_documents; nothing can move money or change your account. The extension asks for no password: SoFi sign-in is through a browser, so first install the sfi CLI and run `sfi auth login --browser` in a terminal. That stores the session in your OS keychain, and the bundled sfi reads it from there. On macOS the first call asks for keychain access; choose Always Allow. Unofficial; not affiliated with SoFi.",
+  "author": {
+    "name": "piekstra",
+    "url": "https://github.com/piekstra"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/piekstra/sofi-cli"
+  },
+  "homepage": "https://github.com/piekstra/sofi-cli",
+  "documentation": "https://github.com/piekstra/sofi-cli#use-with-claude",
+  "support": "https://github.com/piekstra/sofi-cli/issues",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["sofi", "checking", "savings", "banking", "finance", "read-only"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/sfi",
+    "mcp_config": {
+      "command": "${__dirname}/server/sfi",
+      "args": ["mcp"],
+      "platform_overrides": {
+        "win32": {
+          "command": "${__dirname}/server/sfi.exe",
+          "args": ["mcp"]
+        },
+        "linux": {
+          "command": "${__dirname}/server/linux/sfi",
+          "args": ["mcp"]
+        }
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "sofi_balances",
+      "description": "Each open account's balance and APY, and their total."
+    },
+    {
+      "name": "sofi_transactions",
+      "description": "Settled transactions over a date range: spending, deposits and payments."
+    },
+    {
+      "name": "sofi_interest",
+      "description": "Interest paid in a calendar year, by account."
+    },
+    {
+      "name": "sofi_documents",
+      "description": "Monthly statements on file (listed, not downloaded)."
+    }
+  ],
+  "tools_generated": false,
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  }
+}

@@ -1,10 +1,10 @@
 [package]
 name = "sofi-cli"
 description = "Read-only CLI for SoFi Checking & Savings (piekstra-cli/1). Unofficial, community-documented API."
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-# pk-cli-browser (tungstenite 0.30) needs 1.85.
-rust-version = "1.85"
+# pk-cli-mcp (rmcp) needs 1.88.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/piekstra/sofi-cli"
 homepage = "https://github.com/piekstra/sofi-cli"
@@ -16,16 +16,19 @@ name = "sfi"
 path = "src/main.rs"
 
 [dependencies]
-pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0", features = ["reqwest"] }
-pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
-pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
-pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
-pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
-pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
-pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0" }
+pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0" }
+pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0" }
 # `sfi auth login --browser`: the scratch-profile Chrome the owner signs in
 # through, and the session read back over the DevTools protocol (src/browser.rs).
-pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0" }
+pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0" }
+# `sfi mcp`: the MCP profile's tools over the same commands (DESIGN.md §1.9).
+pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0", features = ["stdio"] }
+schemars = "1"
 
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
@@ -47,7 +50,9 @@ predicates = "3"
 # the confirm hook and the recipe step without a browser. Dev-only, and at the
 # dependency's tag so both name one crate: the shipped binary is built without
 # it (`cargo tree -e normal,features -i pk-cli-browser` shows no test-util).
-pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.11.0", features = ["test-util"] }
+pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0", features = ["test-util"] }
+# The MCP profile's conformance checks, for the tests only.
+pk-cli-mcp = { git = "https://github.com/piekstra/cli-common", tag = "v0.14.0", features = ["test-util"] }
 
 [profile.release]
 strip = true

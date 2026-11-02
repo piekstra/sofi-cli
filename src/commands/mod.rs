@@ -156,11 +156,21 @@ impl Ctx {
         account_flag: Option<String>,
     ) -> Result<Self, CliError> {
         let account = cfg.resolve_account(account_flag.as_deref());
+        Self::with_store(common, account, config::credential_store())
+    }
+
+    /// A context reading `creds`, with `account` already resolved (the MCP
+    /// tools pass none: each call names its own).
+    pub fn with_store(
+        common: CommonArgs,
+        account: Option<String>,
+        creds: CredentialStore,
+    ) -> Result<Self, CliError> {
         Ok(Ctx {
             common,
             account,
             sofi: Sofi::new()?,
-            creds: CredentialStore::for_binary(config::BIN),
+            creds,
         })
     }
 

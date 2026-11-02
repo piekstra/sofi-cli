@@ -16,6 +16,7 @@ use pk_cli_core::{CliError, Paged, RangeArgs};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::client::Session;
 use crate::commands::accounts;
 use crate::commands::{date_within, iso_from_mmddyyyy, money_of, str_at, Ctx};
 
@@ -162,33 +163,15 @@ pub fn collect(ctx: &Ctx, range: &RangeArgs) -> Result<Vec<Transaction>, CliErro
     let days = lookback_days(range.since.as_deref());
     let mut items: Vec<Transaction> = Vec::new();
     for account_id in &account_ids {
-        let mut cursor: Option<String> = None;
-        for _ in 0..MAX_PAGES {
-            let variables = json!({
-                "accountIDs": [account_id],
-                "pageSize": PAGE_SIZE,
-                "afterCursor": cursor,
-                "filter": { "days": days, "dateRange": null, "searchText": null,
-                            "amountFilter": null, "transactionTypes": null },
-            });
-            let data = ctx
-                .sofi
-                .graphql(&session, "Transactions", QUERY, variables)?;
-            let entries = transaction_entries(&data, account_id);
-            let page_len = entries.len();
-            for entry in &entries {
-                if !is_posted(entry) {
-                    continue;
-                }
-                if let Some(tx) = Transaction::from_entry(entry, account_id) {
-                    if in_range(&tx, range) {
-                        items.push(tx);
-                    }
-                }
+        let (entries, _capped) = fetch_entries(ctx, &session, account_id, days)?;
+        for entry in &entries {
+            if !is_posted(entry) {
+                continue;
             }
-            cursor = last_cursor(&entries);
-            if page_exhausted(page_len, &cursor) {
-                break;
+            if let Some(tx) = Transaction::from_entry(entry, account_id) {
+                if in_range(&tx, range) {
+                    items.push(tx);
+                }
             }
         }
     }
@@ -196,6 +179,39 @@ pub fn collect(ctx: &Ctx, range: &RangeArgs) -> Result<Vec<Transaction>, CliErro
     // Newest first.
     items.sort_by(|a, b| b.date_str().cmp(&a.date_str()));
     Ok(items)
+}
+
+/// One account's list entries, every state, walked back `days` days page by
+/// page; and whether [`MAX_PAGES`] stopped the walk before the history ran
+/// out. Shared by [`collect`] and the MCP tools.
+pub fn fetch_entries(
+    ctx: &Ctx,
+    session: &Session,
+    account_id: &str,
+    days: u32,
+) -> Result<(Vec<Value>, bool), CliError> {
+    let mut all = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let variables = json!({
+            "accountIDs": [account_id],
+            "pageSize": PAGE_SIZE,
+            "afterCursor": cursor,
+            "filter": { "days": days, "dateRange": null, "searchText": null,
+                        "amountFilter": null, "transactionTypes": null },
+        });
+        let data = ctx
+            .sofi
+            .graphql(session, "Transactions", QUERY, variables)?;
+        let entries = transaction_entries(&data, account_id);
+        let page_len = entries.len();
+        cursor = last_cursor(&entries);
+        all.extend(entries);
+        if page_exhausted(page_len, &cursor) {
+            return Ok((all, false));
+        }
+    }
+    Ok((all, true))
 }
 
 /// Whether a fetched page ends an account's walk: ONLY an empty page or a
@@ -212,7 +228,7 @@ fn page_exhausted(page_len: usize, cursor: &Option<String>) -> bool {
 /// The lookback window the BFF filter takes. `--since` becomes a day count
 /// (the server has no `dateRange` the community code exercises); `--until` is
 /// applied client-side. No `--since` means the default window.
-fn lookback_days(since: Option<&str>) -> u32 {
+pub fn lookback_days(since: Option<&str>) -> u32 {
     match since.and_then(days_since_iso) {
         // A little slack so the boundary day is never trimmed server-side; the
         // exact bound is enforced client-side by `in_range`.
