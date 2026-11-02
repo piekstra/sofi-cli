@@ -620,7 +620,21 @@ fn a_missing_session_asks_for_the_browser_login_in_a_terminal() {
             "{name}: {text}"
         );
         assert!(text.contains("never sign in"), "{name}: {text}");
+        // The CLI's own remedy is dropped: one command to ask for, not two.
+        assert!(!text.contains("`sfi auth login`"), "{name}: {text}");
     }
+}
+
+#[test]
+fn an_auth_error_keeps_its_reason_and_drops_the_cli_s_remedy() {
+    for (message, reason) in [
+        ("no cached session — run `sfi auth login`", "no cached session"),
+        ("the cached session could not be read (bad json) — run `sfi auth login` again", "the cached session could not be read (bad json)"),
+        ("the GraphQL BFF answered HTML (HTTP 401) — the session has probably lapsed; run `sfi auth login --browser`", "the GraphQL BFF answered HTML (HTTP 401) — the session has probably lapsed"),
+    ] {
+        assert_eq!(auth_reason(message), reason);
+    }
+    assert_eq!(auth_reason("401"), "401");
 }
 
 #[test]
