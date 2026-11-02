@@ -90,6 +90,7 @@ sfi interest ytd [--year YYYY]                 # the year's total so far
 sfi transactions list [--since D] [--until D] [--limit N]
 sfi documents list|download               # statements & tax forms
 sfi api GET <PATH>                        # raw read-only passthrough
+sfi mcp [--list-tools]                    # read-only tools for Claude
 sfi self-update | completions <shell> | info
 ```
 
@@ -118,6 +119,59 @@ $ sfi documents download <ID> -o ~/tax/2026/sofi-statement.pdf
 
 Downloads are verified by magic bytes: if the payload does not begin with
 `%PDF`, `sfi` fails rather than writing a file and claiming success.
+
+## Use with Claude
+
+`sfi mcp` serves four read-only tools over MCP, so Claude can answer
+questions about your own SoFi Checking & Savings. There is no hosted
+service: the tools run on your computer, in your copy of `sfi`, and call
+SoFi's web API directly with the session `sfi auth login --browser` stored in
+your OS keychain.
+
+| Tool | Answers |
+| --- | --- |
+| `sofi_balances` | How much cash is at SoFi? Each open account's available balance and APY, with the total, narrowed by `account` (its name) |
+| `sofi_transactions` | What did I spend and receive over a period? Settled transactions by `since`/`until` dates (year to date by default), `account` and `type` |
+| `sofi_interest` | How much interest did a year pay (the 1099-INT figure)? This year is SoFi's own running figure; a past year sums its interest payments |
+| `sofi_documents` | Which monthly statements exist? Listed by `since`/`until`, never downloaded (`sfi documents download` does that). Tax forms are not in this list |
+
+Results are concise by default (`response_format: "detailed"` adds the
+posted balance, the masked number and ids), 25 records a page with a cursor
+for more, and never larger than about 32,000 characters. Accounts are named,
+not numbered. Descriptions come from SoFi; the server tells Claude to treat
+them as data, not instructions. A past year's interest rests on recognising
+interest payments among the transactions, which is unverified against a
+live account (docs/api.md §3.4).
+
+**Sign in first.** SoFi sign-in is through a browser, so no settings form can
+hold it. Install `sfi` and run `sfi auth login --browser` in a terminal (see
+[Login (browser)](#login-browser)). Both ways of connecting Claude below
+then use that session from the OS keychain (service `piekstra.sfi`). If the
+session is missing or has expired, the tools say so and ask you to run
+`sfi auth login --browser` in a terminal; they never sign in by themselves.
+
+**Claude Code.** Add the `sofi-cli` plugin from the
+[piekstra plugin marketplace](https://github.com/piekstra/claude-plugins):
+
+```console
+$ claude plugin marketplace add piekstra/claude-plugins
+$ claude plugin install sofi-cli@piekstra-plugins
+```
+
+or register the server yourself:
+
+```console
+$ claude mcp add sofi -- sfi mcp
+```
+
+**Claude Desktop.** Download `sfi-<version>.mcpb` from the
+[latest release](https://github.com/piekstra/sofi-cli/releases/latest) and
+open it. It asks for nothing: the bundled `sfi` reads the session your
+installed `sfi` stored. On macOS the bundled binary is a different program
+to the keychain, so its first call raises a keychain prompt for the
+`piekstra.sfi` item; choose **Always Allow**, or every call will ask again.
+
+Any other MCP client that launches a local server can run `sfi mcp`.
 
 ## Security
 

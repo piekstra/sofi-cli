@@ -49,6 +49,21 @@ GraphQL header recipe it watches those pages' network requests without request
 bodies, and keeps only header names and the name of the cookie the CSRF header
 is copied from. No header value is stored.
 
+## The MCP server
+
+`sfi mcp` serves read-only tools to an MCP client (Claude Code, Claude
+Desktop) over stdio, on this machine only; it opens no port. It uses the
+session already in the keychain, exactly as the commands do, and never signs
+in: a missing or expired session is an error asking the user to run
+`sfi auth login --browser` in a terminal. No tool downloads a statement or
+returns a statement link. The Claude Desktop extension (`.mcpb`) takes no
+settings and so holds no credential of its own; on macOS its bundled binary
+needs the user's approval, once, to read the `piekstra.sfi` keychain item.
+
+`SFI_KEYCHAIN_SERVICE` renames the keychain service read and written, for
+tests and for checking the error paths against an empty service. It carries
+no secret.
+
 ## What this tool does not do
 
 - **It never moves money, pays a bill, or changes account settings.** There

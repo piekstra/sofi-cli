@@ -9,6 +9,7 @@
 //! password, session, device id, and any parked mid-MFA login state — lives
 //! in the OS keychain under `piekstra.sfi` (see the `*_KEY` constants).
 
+use pk_cli_secrets::CredentialStore;
 use serde::{Deserialize, Serialize};
 
 /// Binary name: keychain service (`piekstra.sfi`), config dir, env prefix.
@@ -44,6 +45,30 @@ pub const DEVICE_KEY: &str = "device";
 /// session that never asked for one. Single-use: deleted on the next attempt
 /// whether it succeeds or fails.
 pub const PENDING_KEY: &str = "pending";
+
+/// Renames the keychain service read and written, for the test suite and for
+/// dogfooding the error paths: pointed at a service that holds nothing, a
+/// command reads a *missing* item, which needs no user approval and fails as
+/// "not logged in", where the real service would open the user's actual
+/// session (and, from the ad-hoc-signed binary `cargo test` builds, raise a
+/// macOS keychain prompt). It names which entry is read; it never carries a
+/// session.
+pub const SERVICE_ENV: &str = "SFI_KEYCHAIN_SERVICE";
+
+/// The credential store every command uses: `piekstra.sfi`, unless
+/// [`SERVICE_ENV`] names another service.
+pub fn credential_store() -> CredentialStore {
+    credential_store_for(std::env::var(SERVICE_ENV).ok().as_deref())
+}
+
+/// [`credential_store`]'s decision, given the variable's value, so a test
+/// can check it without setting the process environment every test shares.
+fn credential_store_for(service: Option<&str>) -> CredentialStore {
+    match service.map(str::trim) {
+        Some(s) if !s.is_empty() => CredentialStore::new(s),
+        _ => CredentialStore::for_binary(BIN),
+    }
+}
 
 /// On-disk, non-secret settings.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -107,6 +132,17 @@ mod tests {
         };
         assert_eq!(cfg.resolve_account(Some("")).as_deref(), Some("1111222233"));
         assert_eq!(Config::default().resolve_account(Some("")), None);
+    }
+
+    #[test]
+    fn the_service_is_sfi_s_unless_the_variable_names_another() {
+        assert_eq!(credential_store_for(None).service(), "piekstra.sfi");
+        assert_eq!(credential_store_for(Some("")).service(), "piekstra.sfi");
+        assert_eq!(credential_store_for(Some("  ")).service(), "piekstra.sfi");
+        assert_eq!(
+            credential_store_for(Some("piekstra.sfi-empty")).service(),
+            "piekstra.sfi-empty"
+        );
     }
 
     /// Secrets have fixed keychain accounts under `piekstra.sfi`; the config

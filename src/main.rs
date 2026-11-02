@@ -13,6 +13,7 @@ mod browser;
 mod client;
 mod commands;
 mod config;
+mod mcp;
 
 use std::path::PathBuf;
 
@@ -89,6 +90,12 @@ enum Command {
     Completions { shell: Shell },
     /// Machine-readable capability discovery (cli-info/v1).
     Info,
+    /// Serve read-only SoFi tools to Claude over MCP (stdio).
+    ///
+    /// For Claude Code (`claude mcp add sofi -- sfi mcp`), Claude Desktop and
+    /// any MCP client. The tools use the session `sfi auth login --browser`
+    /// stored, and never sign in themselves.
+    Mcp(pk_cli_mcp::McpArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -236,6 +243,13 @@ fn run(cli: &Cli) -> Result<(), CliError> {
             return Ok(());
         }
         Command::Info => return commands::misc::info(cli.common.json),
+        // The tools read the account each call names, never the config
+        // file's default or `-a`, so no config is loaded; listing them reads
+        // nothing.
+        Command::Mcp(args) => {
+            let source = mcp::LiveSource::new(&cli.common, config::credential_store())?;
+            return pk_cli_mcp::run(args, mcp::SofiTools::new(source));
+        }
         Command::SelfUpdate(args) => {
             return Updater {
                 repo: REPO.into(),
@@ -304,6 +318,7 @@ fn run(cli: &Cli) -> Result<(), CliError> {
                 | Command::Config(_)
                 | Command::SelfUpdate(_)
                 | Command::Completions { .. }
+                | Command::Mcp(_)
                 | Command::Info => unreachable!("dispatched before session setup"),
             }
         }

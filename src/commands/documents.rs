@@ -42,7 +42,7 @@ pub fn validate_type(kind: &str) -> Result<(), CliError> {
 }
 
 /// Map a statement row onto the profile DTO.
-fn to_document(v: &Value) -> Option<Document> {
+pub fn to_document(v: &Value) -> Option<Document> {
     let id = str_at(v, "documentId")?;
     let date = str_at(v, "statementDate");
 
@@ -81,16 +81,18 @@ fn statement_rows(body: &Value) -> Vec<Value> {
     body.as_array().cloned().unwrap_or_default()
 }
 
-fn fetch(ctx: &Ctx, range: &RangeArgs, kind: Option<&str>) -> Result<Vec<Document>, CliError> {
+/// Every statement row, unmapped: one authenticated read. Shared with the
+/// MCP tools.
+pub fn fetch_rows(ctx: &Ctx) -> Result<Vec<Value>, CliError> {
     let session = ctx.session()?;
     let body = ctx
         .sofi
         .get(&session, &ctx.sofi.url(STATEMENTS_PATH), &[])?;
+    Ok(statement_rows(&body))
+}
 
-    let mut docs: Vec<Document> = statement_rows(&body)
-        .iter()
-        .filter_map(to_document)
-        .collect();
+fn fetch(ctx: &Ctx, range: &RangeArgs, kind: Option<&str>) -> Result<Vec<Document>, CliError> {
+    let mut docs: Vec<Document> = fetch_rows(ctx)?.iter().filter_map(to_document).collect();
 
     // `--type tax` matches nothing until the tax endpoint is wired (see the
     // module note); `--type statement` keeps every row.

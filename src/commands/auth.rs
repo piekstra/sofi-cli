@@ -37,7 +37,7 @@ pub fn login(
     mut cfg: Config,
     input: &LoginInput<'_>,
 ) -> Result<(), CliError> {
-    let creds = CredentialStore::for_binary(config::BIN);
+    let creds = config::credential_store();
 
     // The supported login: open a browser, let the owner sign in past Auth0 +
     // Cloudflare + MFA, and harvest the session cookies over CDP. The modeled
@@ -229,7 +229,7 @@ pub fn status(
     account_flag: Option<&str>,
     verify: bool,
 ) -> Result<(), CliError> {
-    let creds = CredentialStore::for_binary(config::BIN);
+    let creds = config::credential_store();
 
     // Browser-harvested cookie session is the supported credential shape.
     let mut s = AuthStatus::new(true, false, AuthMethod::BrowserSession);
@@ -269,7 +269,7 @@ pub fn status(
 }
 
 pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<(), CliError> {
-    let creds = CredentialStore::for_binary(config::BIN);
+    let creds = config::credential_store();
 
     // The cached session and any half-finished login always go; a `logout`
     // that leaves a resumable attempt behind isn't a logout.
@@ -303,7 +303,7 @@ pub fn set_credential(
     _cfg: Config,
     args: &SetCredentialArgs,
 ) -> Result<(), CliError> {
-    let creds = CredentialStore::for_binary(config::BIN);
+    let creds = config::credential_store();
     if creds.get(config::PASSWORD_KEY)?.is_some() && !args.overwrite {
         return Err(CliError::Usage(
             "a password is already stored — pass --overwrite to replace it".into(),
