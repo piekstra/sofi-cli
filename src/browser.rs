@@ -1318,7 +1318,7 @@ mod tests {
             "text/html",
             "<html></html>",
             "HTTP 502",
-            true,
+            false,
         ),
         (
             "403 Forbidden",
@@ -1337,7 +1337,7 @@ mod tests {
         (
             "503 Service Unavailable",
             "text/html",
-            "<html>dummy-body</html>",
+            "<html><title>Just a moment...</title>dummy-body</html>",
             "bot check",
             true,
         ),

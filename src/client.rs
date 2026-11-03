@@ -631,6 +631,9 @@ impl Sofi {
             if html_is_edge_block(status, &text) {
                 return Err(edge_block(status));
             }
+            if (500..600).contains(&status) {
+                return Err(html_outage(status));
+            }
             return Err(CliError::Auth(format!(
                 "the GraphQL BFF answered HTML (HTTP {status}) — the session has probably lapsed; \
                  run `sfi auth login --browser`"
@@ -932,6 +935,13 @@ pub fn json_response(resp: reqwest::blocking::Response) -> Result<Value, ReadErr
                 retry_after,
             });
         }
+        if (500..600).contains(&status) {
+            return Err(ReadError::Inconclusive {
+                status,
+                retry_after,
+                error: html_outage(status),
+            });
+        }
         Err(CliError::Auth(format!(
             "expected JSON from {} but got an HTML page (HTTP {status}) — the session has \
              probably lapsed (or Cloudflare is challenging this client); run `sfi auth login`",
@@ -1033,8 +1043,9 @@ impl From<ReadError> for CliError {
 }
 
 /// An HTML page from the edge where data was expected: a possible bot check, which
-/// a fresh sign-in may run straight into. Exit 3, as any refusal is, but not worded
-/// as an expired session. It names the status only, never the page.
+/// a fresh sign-in may run straight into. Exit 3 for a 403 or a challenge page, and
+/// exit 5 for a 429 or 5xx, as for any throttle or outage. It is not worded as an
+/// expired session, and it names the status only, never the page.
 fn edge_block(status: u16) -> CliError {
     let message = format!(
         "SoFi answered with an HTML page (HTTP {status}): possibly a bot check or edge block, \
@@ -1042,7 +1053,6 @@ fn edge_block(status: u16) -> CliError {
          client rather than the session. Wait or try another network, then run `sfi auth login \
          --browser`"
     );
-    // A throttle or an outage is exit 5, retry later, on any body.
     if matches!(status, 429 | 500..=599) {
         CliError::Upstream(message)
     } else {
@@ -1050,11 +1060,20 @@ fn edge_block(status: u16) -> CliError {
     }
 }
 
-/// Whether an HTML answer is an edge block rather than a lapsed session's login
-/// page. The one test for every read, so no call site can send the owner to sign
-/// in again into the same block.
+/// Whether an HTML answer names a block rather than a lapsed session's login page.
+/// The one test for every read, so no call site can send the owner to sign in again
+/// into the same block. A bare 5xx page is an outage ([`html_outage`]).
 fn html_is_edge_block(status: u16, text: &str) -> bool {
-    matches!(status, 403 | 429 | 500..=599) || html_reads_as_edge_block(text)
+    matches!(status, 403 | 429) || html_reads_as_edge_block(text)
+}
+
+/// A 5xx with an HTML page and no sign of a block. It says nothing about the
+/// session, so this names no sign-in.
+fn html_outage(status: u16) -> CliError {
+    CliError::Upstream(format!(
+        "SoFi answered with an HTML page (HTTP {status}), an outage that says nothing about \
+         the session; try again later"
+    ))
 }
 
 /// Whether an HTML page reads as a bot check or an edge block rather than a login
@@ -1612,17 +1631,20 @@ mod tests {
         }
     }
 
-    /// An HTML page behind a 403, a 429 or a 5xx on a read is an edge block, typed
-    /// for the hook and worded for everyone else, as is a challenge's page behind a
-    /// 200. An ordinary login page behind a 200 is not. A throttle or an outage is
+    /// An HTML page behind a 403 or a 429 on a read is an edge block, typed for the
+    /// hook and worded for everyone else, as is a challenge's page behind a 200 or a
+    /// 5xx. An ordinary login page behind a 200 is not. A throttle or an outage is
     /// exit 5 on any body.
     #[test]
     fn a_read_types_an_html_edge_block() {
         for (status, code, page) in [
             ("403 Forbidden", 403, "<html></html>"),
             ("429 Too Many Requests", 429, "<html></html>"),
-            ("503 Service Unavailable", 503, "<html></html>"),
-            ("502 Bad Gateway", 502, "<html></html>"),
+            (
+                "503 Service Unavailable",
+                503,
+                "<html><title>Just a moment...</title></html>",
+            ),
             (
                 "200 OK",
                 200,
@@ -1688,8 +1710,11 @@ mod tests {
                 3,
             ),
             ("429 Too Many Requests", "<html></html>", 5),
-            ("503 Service Unavailable", "<html></html>", 5),
-            ("502 Bad Gateway", "<html></html>", 5),
+            (
+                "503 Service Unavailable",
+                "<html><title>Just a moment...</title></html>",
+                5,
+            ),
         ] {
             let (client, server) = client_answering(status, page);
             let err = client
@@ -1700,6 +1725,38 @@ mod tests {
             let text = err.to_string();
             assert!(text.contains("possibly a bot check"), "{status}: {text}");
             assert!(!text.contains("lapsed"), "{status}: {text}");
+        }
+    }
+
+    /// A bare 5xx page is an outage on every read: exit 5, no sign-in offered, and
+    /// typed for the hook as a read that can't decide rather than as a block.
+    #[test]
+    fn a_bare_html_5xx_is_an_outage() {
+        for status in [
+            "500 Internal Server Error",
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+        ] {
+            let (client, server) = client_answering(status, "<html></html>");
+            let err = client
+                .graphql(&dummy_session(), "op", "query", serde_json::json!({}))
+                .unwrap_err();
+            server.join().unwrap();
+            assert_eq!(err.exit_code(), 5, "{status}");
+            let text = err.to_string();
+            assert!(text.contains("outage"), "{status}: {text}");
+            assert!(!text.contains("sign"), "{status}: {text}");
+
+            let (client, server) = client_answering(status, "<html></html>");
+            let err = client
+                .read(&dummy_session(), &client.url("/x"), &[])
+                .unwrap_err();
+            server.join().unwrap();
+            assert!(
+                matches!(err, ReadError::Inconclusive { .. }),
+                "{status}: {err:?}"
+            );
+            assert_eq!(CliError::from(err).exit_code(), 5, "{status}");
         }
     }
 
