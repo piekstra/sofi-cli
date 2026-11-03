@@ -60,8 +60,8 @@ answered ("2 accounts visible"). The mechanism is cli-common's
 `src/browser.rs` says what to read (`browser_capture`) and confirms it:
 
 1. Launch a real Chrome — `SFI_CHROME` overrides the binary search — at
-   `https://login.sofi.com/u/login`, with `--remote-debugging-port=0`, a
-   throwaway `0700` profile and first-run suppression. No automation flags, so
+   `https://login.sofi.com/u/login`, with `--remote-debugging-port=0`, the kept
+   `0700` profile (below) and first-run suppression. No automation flags, so
    `navigator.webdriver` is `false` and the page looks like an ordinary
    browser to Cloudflare/ThreatMetrix.
 2. The **owner signs in by hand** (password and the texted code). The CLI
@@ -89,11 +89,23 @@ answered ("2 accounts visible"). The mechanism is cli-common's
    and, once the jar was read, its cookie names (never a value). Closing the
    window is exit 3 too; Ctrl-C cancels (exit 1).
 
-**Trust boundary:** the CDP debug port has no auth of its own, so the scratch
-profile is `0700`, created exclusively under an unpredictable name (anything
-that can read `DevToolsActivePort` could read the live `SOFI` cookie during
-the login window). The tab closes the moment the session is read, and Chrome
-and the profile are torn down on every exit path, including Ctrl-C.
+**The kept profile.** Chrome runs in `<data dir>/piekstra.sfi/browser-profile`,
+which stays on disk, so SoFi's own cookies (its remembered device, the Auth0
+session, Cloudflare's clearance) carry over and a later `--browser` should need
+less input. **UNVERIFIED-LIVE:** no second sign-in has run in a kept profile
+yet, so how far SoFi lets one go (and whether `/u/login` forwards a signed-in
+browser to `www.sofi.com`) is unknown. `--fresh-profile` runs one sign-in in a
+scratch profile, and `sfi auth logout` removes the kept one. It is a full Chrome
+profile: SECURITY.md lists what it holds. A sign-in that fails once Chrome may
+have used it leaves it in place, and its error says so and names `sfi auth
+logout`. A launch refused before that says nothing about it.
+
+**Trust boundary:** the CDP debug port has no auth of its own, so the profile
+is owner-only: `0700`, and refused when it is a symlink, another user's or any
+other mode (anything that can read `DevToolsActivePort` could read the live
+`SOFI` cookie during the login window). The tab closes the moment the session is
+read, and Chrome is stopped on every exit path, including Ctrl-C. A scratch
+profile is created exclusively under an unpredictable name and removed with it.
 
 ### 2.3 The retained password/`--code` flow — DEAD-LIVE
 
@@ -137,13 +149,20 @@ with a mild read — by default the accounts collection (§3.2), but that endpoi
 itself UNVERIFIED-LIVE, so the path is overridable with `SFI_VALIDATE_PATH`.
 The classification (`browser::probe_outcome`, pure/tested):
 
-- a real JSON read → **accept**;
+- a JSON read holding data (a non-empty object or array) → **accept**;
 - HTML / a login redirect / 401 → **keep waiting** (not signed in yet; the tab
   stays open and the read is retried on the next poll);
-- **404** (the default endpoint doesn't exist) or another transient error →
-  **accept on the `SOFI` bearer cookie**, with a note, so an unverified
-  validation endpoint can't block a genuine login. After sign-in, live-probe
-  the real read (`sfi api GET <path>`) and, if useful, set `SFI_VALIDATE_PATH`.
+- **404** (the default endpoint doesn't exist), another transient error, or a
+  200 with no data (empty, `null`, `{}`, `[]`), in a **scratch profile** (`--fresh-profile`) → **accept on the `SOFI` bearer
+  cookie**, with a note, so an unverified validation endpoint can't block a
+  genuine login. That profile started empty, so the cookie is this sign-in's.
+  After sign-in, live-probe the real read (`sfi api GET <path>`) and, if useful,
+  set `SFI_VALIDATE_PATH`.
+- the same answer in the **kept profile** → **end the wait on the first one**
+  (exit 5): the cookie may be left from an earlier sign-in, so it proves nothing
+  without a working read, and polling every 3 s would keep calling an API that
+  may be throttling this client. The error names the answer and says to retry or
+  use `--fresh-profile`.
 
 ### 2.6 The live 404 — recorded 2026-08-24
 

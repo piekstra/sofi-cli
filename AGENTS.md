@@ -24,7 +24,7 @@ exists to feed the tax/money-optimizer pipeline:
 
 Conforms to `piekstra-cli/1` (see `~/Dev/cli-common/DESIGN.md` and
 `conformance.md`). Shared behavior comes from the `pk-cli-*` crates pinned to
-tag **v0.15.1** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
+tag **v0.16.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
 keychain, config, self-update, the `documents/v1` DTOs and its
 `verify`/`fs_safe` download hygiene, and `pk-cli-browser` for the browser
 sign-in).
@@ -48,6 +48,7 @@ them that way (see "Auth: browser cookie harvest (the supported path)" below).
 | `src/config.rs` | non-secret settings (username, default account) |
 | `src/client.rs` | HTTP, the login/MFA dance, session cookies, downloads |
 | `src/browser.rs` | `auth login --browser` on `pk-cli-browser`: what is read, the confirm read, the GraphQL recipe |
+| `CHANGELOG.md` | what each release changed |
 | `src/commands/*.rs` | one module per command group |
 | `src/mcp.rs` | `sfi mcp`: the MCP tools over a `Source` seam |
 | `packaging/mcpb/` | the Claude Desktop extension manifest |
@@ -104,25 +105,54 @@ DevTools protocol and stores them in the keychain (`session`).
   `auth login --browser` from automation; it needs a human at the keyboard.
 - **The mechanism is cli-common's `pk-cli-browser`; `src/browser.rs` is only
   SoFi's side of it.** The crate owns finding and launching Chrome
-  (`SFI_CHROME`), the `0700` scratch profile, Ctrl-C, closing the tab and the
+  (`SFI_CHROME`), the kept `0700` profile, Ctrl-C, closing the tab and the
   teardown. `browser_capture` says what to read; the confirm hook, the
   validation read and the recipe derivation are sfi's. Don't re-embed
   DevTools code here: a capture the crate can't express is a cli-common
   change.
+- **The profile is kept between sign-ins**, at `~/Library/Application
+  Support/piekstra.sfi/browser-profile` on macOS
+  (`$XDG_DATA_HOME/piekstra.sfi/browser-profile`, or under `~/.local/share`, on
+  Linux), so SoFi's remembered device and its session carry over and a later
+  `--browser` often needs no input. `--fresh-profile` runs one sign-in in a
+  scratch profile and leaves the kept one alone. `auth logout` removes the kept
+  profile as its last step, through `run_logout`, whose removal is a closure:
+  the binary binds `forget_profile(BIN)`, tests bind
+  `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile. A
+  service `SFI_KEYCHAIN_SERVICE` names is a test namespace that must not read or
+  change the real profile or config: `auth logout` skips the removal and says
+  so, `auth login --browser` takes a scratch profile and says so
+  (`scratch_profile_choice`), and neither writes the real config unless
+  `--config` names a file (`keeps_real_config`). The config is loaded only in
+  the commands that use it, so logout runs on a file that can't be parsed. It is
+  a full Chrome profile: history with full URLs, the HTTP cache and site storage
+  sit outside Chrome's cookie encryption, and on Linux with no desktop keyring
+  so does the session cookie (SECURITY.md). A failed sign-in leaves it. The
+  whole sign-in runs inside `noting_kept_profile`, which adds the note to every
+  failure except the refusals before Chrome uses the profile. Every logout step
+  is attempted, and a failed logout's error says what was cleared and what
+  remains. `auth status` does not report the profile: cli-common v0.16.0 has no
+  call for it, and sfi must not work out the path itself.
 - The capture reads only `www.sofi.com` pages (never the Auth0 login host),
   gates on the `SOFI` bearer cookie, and reads the whole `sofi.com` jar (both
   `login.sofi.com` and `www.sofi.com` — docs/api.md §2.5);
   `Session::from_pairs` keeps the four session cookies. Before the tab closes
   it validates against a **swappable** read (`SFI_VALIDATE_PATH`, default the
-  accounts collection); a 404 there doesn't block the login, since the read
-  endpoints are themselves unverified.
+  accounts collection). In a scratch profile a 404 there doesn't block the
+  login, since the read endpoints are themselves unverified. In the kept profile
+  the first inconclusive read, a 200 with no data included, ends the wait
+  (`Confirm::Fail`), so nothing unverified can replace a working session, because the `SOFI`
+  cookie may be left from an earlier sign-in and polling must not keep calling an
+  API that may be throttling. The capture reads no `localStorage`; keep it that way, or
+  a stale token bundle in the kept profile becomes readable on page load.
 - The GraphQL header recipe comes from the first `/bff/graphql` request a
   `www.sofi.com` page makes; the tab is held open up to 25 s for one. Only
   header names and the CSRF cookie's name are stored.
 - **SoFi's side is tested offline on hand-built captures.** `pk-cli-browser`'s
   `test-util` feature (a `[dev-dependencies]` entry at the same tag, so the
   shipped binary is built without it) gives `Captured::for_test`,
-  `JarCookie::for_test` and `CapturedRequest::for_test`. The confirm hook is
+  `JarCookie::for_test`, `CapturedRequest::for_test` and
+  `forget_profile_in`. The confirm hook is
   `confirm_with(candidate, quiet, path, client)`, with `confirm` passing
   `&validation_path()` and `Sofi::new`; a test passes a literal path and
   `|| Sofi::with_base(<loopback>)`, so every `Confirm` answer is exercised
@@ -183,7 +213,8 @@ remedy names plain `auth login`, whose endpoint is dead).
 
 ## Releases
 
-Push a `v*` tag whose version matches `Cargo.toml` and
+Bump `Cargo.toml`, `Cargo.lock` and `packaging/mcpb/manifest.json` together and
+add a `CHANGELOG.md` section. Push a `v*` tag whose version matches `Cargo.toml` and
 `packaging/mcpb/manifest.json` (`.github/workflows/release.yml` refuses a
 mismatch). The workflow builds `sfi-<target>.tar.gz` for both Apple targets,
 `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` (the names

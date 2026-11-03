@@ -119,6 +119,70 @@ fn auth_login_help_documents_the_browser_flag() {
         .stdout(contains("--browser"));
 }
 
+/// `--fresh-profile` picks the profile a browser sign-in runs in, so alone it
+/// would do nothing: a usage error, before any keychain/network/browser work.
+#[test]
+fn fresh_profile_requires_the_browser_flag() {
+    sfi()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--fresh-profile"));
+    isolated("freshalone")
+        .args(["auth", "login", "--fresh-profile"])
+        .assert()
+        .code(2)
+        .stderr(contains("--browser"));
+}
+
+/// The summary `auth --help` lists stays one line; the detail of a logout that
+/// cannot finish is in `auth logout --help`.
+#[test]
+fn logout_help_keeps_the_refusal_detail_out_of_the_summary() {
+    sfi()
+        .args(["auth", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--forget also"))
+        .stdout(contains("still cleared").not());
+    sfi()
+        .args(["auth", "logout", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("Every step is attempted"))
+        .stdout(contains("the rest is still cleared"));
+}
+
+/// A config file that can't be parsed stops nothing in a logout, and `--forget`
+/// clears it. It runs the real logout, so it needs the keychain surface: an
+/// empty named service and a temp `HOME`, so it never reaches the real profile.
+/// Run it deliberately with `SFI_TEST_KEYCHAIN=1 cargo test`.
+#[test]
+fn logout_forget_runs_with_a_config_that_cannot_be_parsed() {
+    if std::env::var("SFI_TEST_KEYCHAIN").as_deref() != Ok("1") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("sfi-corrupt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.json");
+    std::fs::write(&config, "{ not json").unwrap();
+    sfi()
+        .env("HOME", &dir)
+        .env("SFI_KEYCHAIN_SERVICE", "piekstra.sfi-test-empty")
+        .arg("--config")
+        .arg(&config)
+        .args(["auth", "logout", "--forget"])
+        .assert()
+        .success();
+    if let Ok(body) = std::fs::read_to_string(&config) {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&body).is_ok(),
+            "{body}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `--browser` harvests a whole session, so it can't be combined with the
 /// single-code resume or a username; the conflict is a usage error, caught
 /// before any keychain/network/browser work.
