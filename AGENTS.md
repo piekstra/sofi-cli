@@ -24,7 +24,7 @@ exists to feed the tax/money-optimizer pipeline:
 
 Conforms to `piekstra-cli/1` (see `~/Dev/cli-common/DESIGN.md` and
 `conformance.md`). Shared behavior comes from the `pk-cli-*` crates pinned to
-tag **v0.20.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
+tag **v0.24.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
 keychain, config, self-update, the `documents/v1` DTOs and its
 `verify`/`fs_safe` download hygiene, and `pk-cli-browser` for the browser
 sign-in).

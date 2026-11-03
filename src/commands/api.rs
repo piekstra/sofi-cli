@@ -15,8 +15,10 @@ pub fn run(ctx: &Ctx, args: &ApiArgs) -> Result<(), CliError> {
     // here too so this stays true if it ever gains another caller.
     debug_assert_eq!(args.method.trim().to_uppercase(), "GET");
 
+    // The session cookie goes with this request, so an `http://` URL is refused
+    // before the keychain is touched.
+    let url = args.secure_url(ctx.sofi.base())?;
     let session = ctx.session()?;
-    let url = args.url(ctx.sofi.base());
     let v = ctx.sofi.get(&session, &url, &[])?;
     output::json(&v);
     Ok(())

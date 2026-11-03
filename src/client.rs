@@ -357,6 +357,7 @@ impl Sofi {
             .user_agent(USER_AGENT)
             .default_headers(headers)
             .timeout(Duration::from_secs(60))
+            .redirect(pk_cli_core::transport::secure_redirects())
             .build()
             .map_err(|e| CliError::Other(format!("failed to build HTTP client: {e}")))?;
         Ok(Sofi {
@@ -493,7 +494,7 @@ impl Sofi {
             .post(self.url(path))
             .json(body)
             .send()
-            .map_err(|e| CliError::Upstream(format!("contacting SoFi: {e}")))?;
+            .map_err(|e| upstream("contacting SoFi", e))?;
         let status = resp.status().as_u16();
         // The Set-Cookie lines of the **final** response hop. If SoFi turns out
         // to set session cookies on an intermediate 302 of the login/verify
@@ -508,7 +509,7 @@ impl Sofi {
             .collect();
         let text = resp
             .text()
-            .map_err(|e| CliError::Upstream(format!("reading login response: {e}")))?;
+            .map_err(|e| upstream("reading login response", e))?;
         // Deliberately NOT the shared `classify_status` ladder: a login/verify
         // 4xx can still carry an MFA challenge, so every non-2xx-but-not-429
         // body is handed to `interpret_login`, which owns the login-specific
@@ -547,7 +548,9 @@ impl Sofi {
             .header(reqwest::header::COOKIE, &session.cookie)
             .query(query)
             .send()
-            .map_err(|e| ReadError::NoAnswer(CliError::Upstream(format!("calling {url}: {e}"))))?;
+            .map_err(|e| {
+                ReadError::NoAnswer(upstream(&format!("calling {}", without_query(url)), e))
+            })?;
         json_response(resp)
     }
 
@@ -564,7 +567,7 @@ impl Sofi {
                 "text/html,application/xhtml+xml,application/pdf,*/*;q=0.8",
             )
             .send()
-            .map_err(|e| CliError::Upstream(format!("downloading {url}: {e}")))?;
+            .map_err(|e| upstream(&format!("downloading {}", without_query(url)), e))?;
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
         // The same status ladder every read uses (one definition).
@@ -573,7 +576,7 @@ impl Sofi {
         }
         let bytes = resp
             .bytes()
-            .map_err(|e| CliError::Upstream(format!("reading document body: {e}")))?
+            .map_err(|e| upstream("reading document body", e))?
             .to_vec();
         // A lapsed session (or a Cloudflare interstitial) answers 200 with an
         // HTML login page where a PDF was promised: an auth failure (exit 3),
@@ -622,7 +625,7 @@ impl Sofi {
         }
         let resp = req
             .send()
-            .map_err(|e| CliError::Upstream(format!("calling the SoFi GraphQL BFF: {e}")))?;
+            .map_err(|e| upstream("calling the SoFi GraphQL BFF", e))?;
 
         let (status, url, text) = response_parts(resp)?;
 
@@ -901,7 +904,7 @@ fn response_parts(resp: reqwest::blocking::Response) -> Result<(u16, String, Str
     let url = resp.url().to_string();
     let text = resp
         .text()
-        .map_err(|e| CliError::Upstream(format!("reading response body: {e}")))?;
+        .map_err(|e| upstream("reading response body", e))?;
     Ok((status, url, text))
 }
 
@@ -983,6 +986,16 @@ fn looks_like_html(text: &str) -> bool {
     let head = text.trim_start().as_bytes();
     let lower = String::from_utf8_lossy(&head[..head.len().min(256)]).to_lowercase();
     lower.starts_with("<!doctype html") || lower.starts_with("<html") || lower.starts_with("<?xml")
+}
+
+/// A network failure, with what was being done. reqwest's own message quotes the
+/// whole URL, and a redirect's can carry an OAuth code; this names only the origin
+/// and says why a redirect was refused.
+fn upstream(what: &str, e: reqwest::Error) -> CliError {
+    match CliError::from(e) {
+        CliError::Upstream(message) => CliError::Upstream(format!("{what}: {message}")),
+        other => other,
+    }
 }
 
 /// A URL for a message, without its query or fragment: a redirect to the login page
@@ -1125,6 +1138,23 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_network_failure_names_the_origin_and_not_the_rest_of_the_url() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let e = reqwest::blocking::get(format!("http://127.0.0.1:{port}/acct-xyz?code=dummy"))
+            .unwrap_err();
+        let message = upstream("fetching", e).to_string();
+        assert!(message.contains("fetching: "), "{message}");
+        assert!(message.contains("127.0.0.1"), "{message}");
+        for leak in ["acct-xyz", "dummy"] {
+            assert!(!message.contains(leak), "{message}");
+        }
+    }
 
     fn sofi() -> Sofi {
         Sofi::new().expect("client builds")
@@ -1620,6 +1650,63 @@ mod tests {
         });
         let client = Sofi::with_base(format!("http://127.0.0.1:{port}")).expect("client builds");
         (client, handle)
+    }
+
+    /// A stub on 127.0.0.1. Answers each request with `respond(request)` as a raw
+    /// HTTP response, and keeps each request so a test can see what arrived.
+    fn stub(
+        respond: impl Fn(&str) -> String + Send + 'static,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                let request = loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).into_owned();
+                    let complete = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                        let length = head
+                            .lines()
+                            .find_map(|l| {
+                                let (name, value) = l.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())?
+                            })
+                            .unwrap_or(0);
+                        body.len() >= length
+                    });
+                    if n == 0 || complete {
+                        break text;
+                    }
+                };
+                let response = respond(&request);
+                log.lock().unwrap().push(request);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (base, seen)
+    }
+
+    fn redirect_to(location: &str) -> String {
+        format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    }
+
+    #[test]
+    fn a_redirect_that_leaves_https_is_refused() {
+        let (base, seen) = stub(|_| redirect_to("http://www.example.invalid/next"));
+        let err = Sofi::with_base(&base)
+            .unwrap()
+            .get(&dummy_session(), &format!("{base}/start"), &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("leaves https"), "{err}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
     fn dummy_session() -> Session {
