@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.2 — 2026-11-03
+
+- `sfi auth login --browser --stdin` and `--browser --from-env` are a usage error
+  (exit 2) that names the flag. They used to parse: the sign-in opened Chrome and
+  never read the password on stdin or the variable. A script that passes either
+  flag beside `--browser` must drop it.
+
 ## v0.3.1 — 2026-11-03
 
 Moves to cli-common v0.19.0. The minimum Rust version is now 1.89.

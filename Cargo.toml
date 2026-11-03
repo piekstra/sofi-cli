@@ -1,7 +1,7 @@
 [package]
 name = "sofi-cli"
 description = "Read-only CLI for SoFi Checking & Savings (piekstra-cli/1). Unofficial, community-documented API."
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 # pk-cli-auth needs 1.89.
 rust-version = "1.89"

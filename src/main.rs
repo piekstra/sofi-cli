@@ -117,8 +117,14 @@ enum AuthCmd {
 
 /// `auth login`. The **supported** path is `--browser`; the password/`--code`
 /// flow is retained but its endpoint is dead-live (docs/api.md §2).
+///
+/// `--browser` captures the session, so it takes no other credential source:
+/// clap refuses it beside these flags (exit 2) before anything reads the keychain
+/// or the network or opens Chrome (cli-common DESIGN.md §2.2).
 #[derive(clap::Args, Debug)]
-#[command(mut_arg("browser", |a| a.conflicts_with_all(["code", "username"])))]
+#[command(mut_arg("browser", |a| {
+    a.conflicts_with_all(["code", "username", "stdin", "from_env"])
+}))]
 struct SofiLoginArgs {
     #[command(flatten)]
     base: LoginArgs,
