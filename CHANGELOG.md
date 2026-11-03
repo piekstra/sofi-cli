@@ -6,8 +6,11 @@
   was told, where it used to say only "answered as signed out". A 403 or a
   challenge's HTML page names itself as a possible bot check or edge block, and
   says to wait, since a sign-in now may hit the same block. Reads outside a
-  sign-in use the same wording. Exit codes are unchanged. The text holds a status
-  and a URL without its query, never a cookie value or the page.
+  sign-in use the same wording. Exit codes are unchanged. The text holds a
+  status and a URL without its query, never a cookie value or the page. The
+  first such block in a window also prints one warning on stderr, unless `-q`,
+  saying you can press Ctrl-C rather than wait out the timeout. A 401 or a plain
+  403 prints nothing.
 - `sfi auth login --help` no longer offers `--no-verify` or `--overwrite`, which
   no login path reads. Both still parse without `--browser`, so a script that
   passes one does not break. `auth set-credential --overwrite` is unchanged.

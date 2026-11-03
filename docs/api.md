@@ -87,12 +87,16 @@ Before the tab closes, the session is validated with a mild read (§2.5): a
 refused answer keeps the tab open and asks again on the next poll, and a timeout
 gives the refusal's own text. A 403 or a challenge's HTML page names itself as a
 possible bot check or edge block, not an expired session; the text holds a
-status and a URL without its query, never a cookie value or the page. On success
-the tab closes, Chrome quits, and the session goes to the keychain (`session`).
-A timeout after **10 minutes** (exit 3) says what was missing: no `www.sofi.com`
-page, the `SOFI` cookie, or the validation read, and, once the jar was read, its
-cookie names (never a value). Closing the window is exit 3 too; Ctrl-C cancels
-(exit 1).
+status and a URL without its query, never a cookie value or the page. The first
+such block in a window also prints one warning on stderr, unless `-q`, saying
+the owner can press Ctrl-C rather than wait out the timeout; the wait goes on,
+since the window can still clear. A 401 or a plain 403 prints nothing, because a
+stale cookie in a kept profile answers that way before the owner has signed in.
+On success the tab closes, Chrome quits, and the session goes to the keychain
+(`session`). A timeout after **10 minutes** (exit 3) says what was missing: no
+`www.sofi.com` page, the `SOFI` cookie, or the validation read, and, once the
+jar was read, its cookie names (never a value). Closing the window is exit 3
+too; Ctrl-C cancels (exit 1).
 
 **The kept profile.** Chrome runs in `<data dir>/piekstra.sfi/browser-profile`,
 which stays on disk, so SoFi's own cookies (its remembered device, the Auth0

@@ -954,13 +954,22 @@ fn without_query(url: &str) -> &str {
     url.split(['?', '#']).next().unwrap_or(url)
 }
 
+/// The words only [`edge_block`] uses, so a sign-in's hook can tell that refusal from
+/// the others, which all arrive as the same `Auth`.
+pub const EDGE_BLOCK: &str = "possibly a bot check or edge block";
+
+/// Whether a refusal's text is [`edge_block`]'s.
+pub fn names_an_edge_block(refusal: &str) -> bool {
+    refusal.contains(EDGE_BLOCK)
+}
+
 /// An HTML page from the edge where data was expected: a possible bot check, which
 /// a fresh sign-in may run straight into. Exit 3, as any refusal is, but not worded
 /// as an expired session. It names the status only, never the page.
 fn edge_block(status: u16) -> CliError {
     CliError::Auth(format!(
-        "SoFi answered with an HTML page (HTTP {status}): possibly a bot check or edge \
-         block, not an expired session. Wait before signing in again, since a retry now may \
+        "SoFi answered with an HTML page (HTTP {status}): {EDGE_BLOCK}, not an expired \
+         session. Wait before signing in again, since a retry now may \
          hit the same block; then run `sfi auth login --browser`"
     ))
 }
