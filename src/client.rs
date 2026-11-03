@@ -618,6 +618,9 @@ impl Sofi {
 
         // A lapsed session / Cloudflare interstitial is HTML, not JSON.
         if looks_like_html(&text) {
+            if status == 403 || html_reads_as_edge_block(&text) {
+                return Err(edge_block(status));
+            }
             return Err(CliError::Auth(format!(
                 "the GraphQL BFF answered HTML (HTTP {status}) — the session has probably lapsed; \
                  run `sfi auth login --browser`"
@@ -841,9 +844,16 @@ pub fn interpret_login(v: &Value, status: u16) -> Result<LoginStep, CliError> {
 pub fn classify_status(status: u16, url: &str, detail: &Value) -> Option<CliError> {
     match status {
         429 => Some(throttled()),
-        401 | 403 => Some(CliError::Auth(format!(
+        401 => Some(CliError::Auth(format!(
             "SoFi rejected the request (HTTP {status}) — run `sfi auth login`"
         ))),
+        403 => Some(CliError::Auth(
+            "SoFi refused the request (HTTP 403): the session may be invalid, or this may be \
+             a bot check or edge block. If a sign-in just met this, wait before trying again, \
+             since a retry now may hit the same block; otherwise run `sfi auth login \
+             --browser`"
+                .into(),
+        )),
         404 => Some(CliError::NotFound(format!("HTTP 404 from {url}"))),
         s if !(200..300).contains(&s) => Some(CliError::Upstream(format!(
             "SoFi returned HTTP {s}{}",
@@ -863,8 +873,9 @@ pub fn document_auth_failure(bytes: &[u8], url: &str) -> Option<CliError> {
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]);
     looks_like_html(&head).then(|| {
         CliError::Auth(format!(
-            "expected a PDF from {url} but got an HTML page — the session has probably lapsed \
-             (or Cloudflare is challenging this client); run `sfi auth login`"
+            "expected a PDF from {} but got an HTML page — the session has probably lapsed \
+             (or Cloudflare is challenging this client); run `sfi auth login`",
+            without_query(url)
         ))
     })
 }
@@ -903,9 +914,13 @@ pub fn json_response(resp: reqwest::blocking::Response) -> Result<Value, CliErro
     // as an HTML page with a 200, not a 401. So shape, not status, decides,
     // and this body-shaped check runs before the status ladder.
     if looks_like_html(&text) {
+        if matches!(status, 403 | 429 | 503) || html_reads_as_edge_block(&text) {
+            return Err(edge_block(status));
+        }
         return Err(CliError::Auth(format!(
-            "expected JSON from {url} but got an HTML page (HTTP {status}) — the session has \
-             probably lapsed (or Cloudflare is challenging this client); run `sfi auth login`"
+            "expected JSON from {} but got an HTML page (HTTP {status}) — the session has \
+             probably lapsed (or Cloudflare is challenging this client); run `sfi auth login`",
+            without_query(&url)
         )));
     }
     classify_and_parse(status, &url, &text)
@@ -931,6 +946,38 @@ fn looks_like_html(text: &str) -> bool {
     let head = text.trim_start().as_bytes();
     let lower = String::from_utf8_lossy(&head[..head.len().min(256)]).to_lowercase();
     lower.starts_with("<!doctype html") || lower.starts_with("<html") || lower.starts_with("<?xml")
+}
+
+/// A URL for a message, without its query or fragment: a redirect to the login page
+/// carries a state value there, and a pre-signed link its signature.
+fn without_query(url: &str) -> &str {
+    url.split(['?', '#']).next().unwrap_or(url)
+}
+
+/// An HTML page from the edge where data was expected: a possible bot check, which
+/// a fresh sign-in may run straight into. Exit 3, as any refusal is, but not worded
+/// as an expired session. It names the status only, never the page.
+fn edge_block(status: u16) -> CliError {
+    CliError::Auth(format!(
+        "SoFi answered with an HTML page (HTTP {status}): possibly a bot check or edge \
+         block, not an expired session. Wait before signing in again, since a retry now may \
+         hit the same block; then run `sfi auth login --browser`"
+    ))
+}
+
+/// Whether an HTML page reads as a bot check or an edge block rather than a login
+/// page: a challenge's own wording, in the head of the page. Not a login page's
+/// reCAPTCHA or Turnstile, which every sign-in shows.
+fn html_reads_as_edge_block(text: &str) -> bool {
+    let head = String::from_utf8_lossy(&text.as_bytes()[..text.len().min(8192)]).to_lowercase();
+    [
+        "just a moment",
+        "attention required",
+        "cf-chl",
+        "access denied",
+    ]
+    .iter()
+    .any(|marker| head.contains(marker))
 }
 
 /// A throttle is upstream (exit 5), and waiting is the actionable part.
@@ -1334,6 +1381,35 @@ mod tests {
 
     /// The status ladder has exactly one definition; pin the whole contract so
     /// a re-pin or a live-capture fix can't silently reshuffle exit codes.
+    /// A challenge page names itself; a login page does not, though it carries a
+    /// bot check of its own. A URL in a message drops what could be a value.
+    #[test]
+    fn an_edge_block_page_reads_differently_from_a_login_page() {
+        for page in [
+            "<!DOCTYPE html><html><title>Just a moment...</title></html>",
+            "<html><title>Attention Required! | Cloudflare</title></html>",
+            "<html><script src=\"/cdn-cgi/challenge-platform/cf-chl\"></script></html>",
+        ] {
+            assert!(html_reads_as_edge_block(page), "{page}");
+        }
+        for page in [
+            "<!DOCTYPE html><html>Sign in</html>",
+            "<html><div class=\"g-recaptcha\"></div></html>",
+            "<html><script src=\"https://challenges.cloudflare.com/turnstile\"></script></html>",
+        ] {
+            assert!(!html_reads_as_edge_block(page), "{page}");
+        }
+        let message = edge_block(403).to_string();
+        assert!(message.contains("bot check"), "{message}");
+        assert!(message.contains("not an expired session"), "{message}");
+        assert_eq!(edge_block(403).exit_code(), 3);
+
+        assert_eq!(
+            without_query("https://login.example.com/u/login?state=dummy#frag"),
+            "https://login.example.com/u/login"
+        );
+    }
+
     #[test]
     fn classify_status_pins_the_exit_code_contract() {
         let url = "https://www.sofi.com/x";

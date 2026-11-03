@@ -122,18 +122,26 @@ enum AuthCmd {
 /// refuses it beside every other login flag (exit 2) rather than ignore the flag,
 /// before anything reads the keychain or the network or opens Chrome.
 #[derive(clap::Args, Debug)]
-#[command(mut_arg("browser", |a| {
-    a.conflicts_with_all([
-        "code",
-        "username",
-        "stdin",
-        "from_env",
-        "no_verify",
-        "overwrite",
-        "non_interactive",
-        "channel",
-    ])
-}))]
+///
+/// The shared `LoginArgs` brings `--no-verify` and `--overwrite`, which no login
+/// path here reads, so `--help` does not offer them. They still parse, so a script
+/// that passes one does not break.
+#[command(
+    mut_arg("browser", |a| {
+        a.conflicts_with_all([
+            "code",
+            "username",
+            "stdin",
+            "from_env",
+            "no_verify",
+            "overwrite",
+            "non_interactive",
+            "channel",
+        ])
+    }),
+    mut_arg("no_verify", |a| a.hide(true)),
+    mut_arg("overwrite", |a| a.hide(true))
+)]
 struct SofiLoginArgs {
     #[command(flatten)]
     base: LoginArgs,

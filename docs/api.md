@@ -65,34 +65,34 @@ answered ("2 accounts visible"). The mechanism is cli-common's
 `src/browser.rs` says what to read (`browser_capture`) and confirms it:
 
 1. Launch a real Chrome — `SFI_CHROME` overrides the binary search — at
-   `https://login.sofi.com/u/login`, with `--remote-debugging-port=0`, the kept
-   `0700` profile (below) and first-run suppression. No automation flags, so
-   `navigator.webdriver` is `false` and the page looks like an ordinary
-   browser to Cloudflare/ThreatMetrix.
-2. The **owner signs in by hand** (password and the texted code). The CLI
-   never drives the page, and never attaches to the `login.sofi.com` page at
-   all, so the anti-bot stack sees a real human.
-3. Every ~3s the crate lists the pages and, once one is open on
-   `www.sofi.com` (the app, where Auth0 redirects after sign-in), reads the
-   browser's cookies with one `Storage.getCookies`. That call returns
-   **HttpOnly** cookies (unlike page JS) and covers **every origin** the
-   profile holds, so the `sofi.com` jar includes both `login.sofi.com` and
-   `www.sofi.com` (§2.5). The `SOFI` bearer cookie (app origin, set only
-   post-login) is the "signed in" gate; `Session::from_pairs` keeps the four
-   session cookies (§2.4) and drops the rest.
-4. From the moment a `www.sofi.com` page opens, the crate watches that page's
-   requests for the app's first `/bff/graphql` request (§3.4). Once `SOFI` is
-   set, if none has come yet, the tab is held open up to **25 s** for one.
-   Only the header **names** and the name of the cookie the CSRF header is
-   copied from are kept (`GraphqlRecipe`); with no request, the client uses
-   the modeled header defaults and says so.
-5. Before the tab closes, the session is validated with a mild read (§2.5):
-   a signed-out answer keeps the tab open and asks again on the next poll.
-   On success the tab closes, Chrome quits, and the session goes to the
-   keychain (`session`). A timeout after **10 minutes** (exit 3) says what was
-   missing: no `www.sofi.com` page, the `SOFI` cookie, or the validation read,
-   and, once the jar was read, its cookie names (never a value). Closing the
-   window is exit 3 too; Ctrl-C cancels (exit 1).
+`https://login.sofi.com/u/login`, with `--remote-debugging-port=0`, the kept
+`0700` profile (below) and first-run suppression. No automation flags, so
+`navigator.webdriver` is `false` and the page looks like an ordinary browser to
+Cloudflare/ThreatMetrix. 2. The **owner signs in by hand** (password and the
+texted code). The CLI never drives the page, and never attaches to the
+`login.sofi.com` page at all, so the anti-bot stack sees a real human. 3. Every
+~3s the crate lists the pages and, once one is open on `www.sofi.com` (the app,
+where Auth0 redirects after sign-in), reads the browser's cookies with one
+`Storage.getCookies`. That call returns **HttpOnly** cookies (unlike page JS)
+and covers **every origin** the profile holds, so the `sofi.com` jar includes
+both `login.sofi.com` and `www.sofi.com` (§2.5). The `SOFI` bearer cookie (app
+origin, set only post-login) is the "signed in" gate; `Session::from_pairs`
+keeps the four session cookies (§2.4) and drops the rest. 4. From the moment a
+`www.sofi.com` page opens, the crate watches that page's requests for the app's
+first `/bff/graphql` request (§3.4). Once `SOFI` is set, if none has come yet,
+the tab is held open up to **25 s** for one. Only the header **names** and the
+name of the cookie the CSRF header is copied from are kept (`GraphqlRecipe`);
+with no request, the client uses the modeled header defaults and says so. 5.
+Before the tab closes, the session is validated with a mild read (§2.5): a
+refused answer keeps the tab open and asks again on the next poll, and a timeout
+gives the refusal's own text. A 403 or a challenge's HTML page names itself as a
+possible bot check or edge block, not an expired session; the text holds a
+status and a URL without its query, never a cookie value or the page. On success
+the tab closes, Chrome quits, and the session goes to the keychain (`session`).
+A timeout after **10 minutes** (exit 3) says what was missing: no `www.sofi.com`
+page, the `SOFI` cookie, or the validation read, and, once the jar was read, its
+cookie names (never a value). Closing the window is exit 3 too; Ctrl-C cancels
+(exit 1).
 
 **The kept profile.** Chrome runs in `<data dir>/piekstra.sfi/browser-profile`,
 which stays on disk, so SoFi's own cookies (its remembered device, the Auth0

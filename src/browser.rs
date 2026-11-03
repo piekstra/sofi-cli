@@ -290,8 +290,10 @@ fn confirm_with(
 /// it. Pure, so the mapping is tested without a browser or a live endpoint:
 ///
 /// - the read worked: capture the session;
-/// - the read answered as signed out: keep the tab open and ask again next
-///   poll (the reason is named if the wait times out);
+/// - the read was refused: keep the tab open and ask again next poll. The refusal's
+///   own text is the reason named if the wait times out, so a bot check reads as
+///   one. It holds a status and a URL without its query, never a cookie value or
+///   the answer's body;
 /// - the read was inconclusive, in a scratch profile: capture the session on the
 ///   `SOFI` cookie, and say so. That profile started empty, so the cookie came
 ///   from this sign-in;
@@ -307,8 +309,8 @@ fn confirm_outcome(
 ) -> (Confirm, Option<String>) {
     match validated {
         Ok(Probe::Ready) => (Confirm::Ready, None),
-        Ok(Probe::NotYet) => (
-            Confirm::NotYet(format!("the validation read {path} answered as signed out")),
+        Ok(Probe::NotYet(why)) => (
+            Confirm::NotYet(format!("the validation read {path} was refused: {why}")),
             None,
         ),
         Ok(Probe::Unverifiable(why)) if kept_profile => (
@@ -409,8 +411,10 @@ fn cookie_pairs(session: &Session) -> Vec<(String, String)> {
 enum Probe {
     /// The session works — a real JSON read came back.
     Ready,
-    /// Not signed in yet (HTML login page / redirect / 401) — keep waiting.
-    NotYet,
+    /// Refused (an HTML page, a redirect to one, a 401 or a 403) — keep waiting. The
+    /// owner may not have finished signing in, or a bot check may be in the way, so
+    /// this holds what the read was told.
+    NotYet(String),
     /// Can't tell (the validation endpoint is itself unverified — a 404, or a
     /// transient upstream error). Accept on the bearer cookie, but say so.
     Unverifiable(String),
@@ -430,9 +434,8 @@ fn probe_outcome(res: &Result<serde_json::Value, CliError>, path: &str) -> Probe
         Ok(_) => Probe::Unverifiable(format!(
             "the validation read {path} answered 200 with no data"
         )),
-        // HTML-where-JSON-expected, a login redirect, or a 401/403 all map to
-        // Auth: the owner hasn't finished signing in.
-        Err(CliError::Auth(_)) => Probe::NotYet,
+        // HTML-where-JSON-expected, a login redirect, or a 401/403 all map to Auth.
+        Err(CliError::Auth(why)) => Probe::NotYet(why.clone()),
         Err(CliError::NotFound(_)) => Probe::Unverifiable(format!(
             "the validation read {path} returned 404 — that endpoint is unverified \
              (set SFI_VALIDATE_PATH to a known read)"
@@ -598,7 +601,7 @@ mod tests {
         // HTML/login-redirect/401 all surface as CliError::Auth.
         assert_eq!(
             probe_outcome(&Err(CliError::Auth("html login page".into())), "/x"),
-            Probe::NotYet
+            Probe::NotYet("html login page".into())
         );
     }
 
@@ -631,12 +634,13 @@ mod tests {
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert_eq!(note, None);
 
-        let (answer, note) = confirm_outcome(Ok(Probe::NotYet), path, false);
+        let (answer, note) =
+            confirm_outcome(Ok(Probe::NotYet("dummy refusal".into())), path, false);
         match answer {
             Confirm::NotYet(reason) => {
                 assert_eq!(
                     reason,
-                    format!("the validation read {path} answered as signed out")
+                    format!("the validation read {path} was refused: dummy refusal")
                 )
             }
             other => panic!("expected NotYet, got {other:?}"),
@@ -940,22 +944,61 @@ mod tests {
         assert_eq!(header(&head, "cookie"), Some(SIGNED_IN_COOKIE));
     }
 
-    /// A read that answers as signed out keeps the tab open, with a reason
-    /// naming the read: a 401, a 403, and an HTML login page behind a 200.
+    /// A refused read keeps the tab open, with a reason that names the read and
+    /// what it was told: a 401, a 403, and an HTML login page behind a 200.
     #[test]
-    fn a_signed_in_capture_keeps_waiting_while_the_read_answers_signed_out() {
-        let want = format!("the validation read {VALIDATION_PATH} answered as signed out");
-        for (status, content_type, body) in [
-            ("401 Unauthorized", "application/json", ""),
-            ("403 Forbidden", "application/json", ""),
-            ("200 OK", "text/html", "<!DOCTYPE html><html>Sign in</html>"),
+    fn a_signed_in_capture_keeps_waiting_while_the_read_is_refused() {
+        for (status, content_type, body, told) in [
+            ("401 Unauthorized", "application/json", "", "HTTP 401"),
+            ("403 Forbidden", "application/json", "", "bot check"),
+            (
+                "200 OK",
+                "text/html",
+                "<!DOCTYPE html><html>Sign in</html>",
+                "probably lapsed",
+            ),
         ] {
             let (answer, head) = confirm_on_loopback(&signed_in(), status, content_type, body);
             match answer {
-                Confirm::NotYet(reason) => assert_eq!(reason, want, "{status} {content_type}"),
+                Confirm::NotYet(reason) => {
+                    let start = format!("the validation read {VALIDATION_PATH} was refused: ");
+                    assert!(reason.starts_with(&start), "{reason}");
+                    assert!(reason.contains(told), "{status}: {reason}");
+                }
                 other => panic!("{status} {content_type}: expected NotYet, got {other:?}"),
             }
             assert_eq!(header(&head, "cookie"), Some(SIGNED_IN_COOKIE));
+        }
+    }
+
+    /// An edge block during a sign-in reads as a possible bot check, not as a dead
+    /// session, so the timeout tells the owner not to retry into it. The reason
+    /// holds neither the answer's body nor a cookie value.
+    #[test]
+    fn a_403_html_answer_reaches_not_yet_as_a_possible_bot_check() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title>dummy-body</html>";
+        for (status, page) in [
+            ("403 Forbidden", PAGE),
+            ("403 Forbidden", "<html>dummy-body</html>"),
+            ("200 OK", PAGE),
+        ] {
+            let (answer, _) = confirm_on_loopback(&signed_in(), status, "text/html", page);
+            let Confirm::NotYet(reason) = answer else {
+                panic!("{status}: expected NotYet, got {answer:?}");
+            };
+            assert!(reason.contains("possibly a bot check"), "{reason}");
+            assert!(!reason.contains("lapsed"), "{reason}");
+            assert!(!reason.contains("dummy-body"), "{reason}");
+            for (_, value) in signed_in()
+                .cookie_header()
+                .unwrap()
+                .expose()
+                .split("; ")
+                .filter_map(|pair| pair.split_once('='))
+                .filter(|(_, value)| value.len() > 1)
+            {
+                assert!(!reason.contains(value), "{reason}");
+            }
         }
     }
 
