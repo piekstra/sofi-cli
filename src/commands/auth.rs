@@ -313,8 +313,45 @@ pub fn status(
         }
     }
 
+    let (browser_profile, line) = browser_profile_status(config::service_overridden(), || {
+        pk_cli_browser::profile_exists(config::BIN)
+    });
+    s.browser_profile = browser_profile;
+    if let (Some(line), false) = (line, common.quiet) {
+        eprintln!("{line}");
+    }
+
     s.emit(common.json);
     Ok(())
+}
+
+/// `auth status`'s browser field: whether a `--browser` sign-in keeps a profile
+/// here, not whether it is signed in. Returns the field and any line for stderr.
+/// `auth status` works whatever state the CLI is in, so a profile that needs
+/// repair is a warning and leaves the field out. A service `SFI_KEYCHAIN_SERVICE`
+/// names is a test namespace, so while it is set nothing is read about the real
+/// profile and the field is left out too.
+///
+/// The check is passed in: the binary binds it to `profile_exists(BIN)`, the
+/// tests to `profile_exists_in` under a temp dir, so a test never reads the
+/// owner's real data dir.
+fn browser_profile_status(
+    service_overridden: bool,
+    exists: impl FnOnce() -> Result<bool, BrowserError>,
+) -> (Option<bool>, Option<String>) {
+    if service_overridden {
+        return (
+            None,
+            Some(format!(
+                "{} is set, so the real browser profile is not reported",
+                config::SERVICE_ENV
+            )),
+        );
+    }
+    match exists() {
+        Ok(kept) => (Some(kept), None),
+        Err(e) => (None, Some(format!("warning: {e}"))),
+    }
 }
 
 pub fn logout(
@@ -647,6 +684,49 @@ mod tests {
             .join(format!("piekstra.{}", config::BIN))
             .join("browser-profile");
         (root, profile)
+    }
+
+    /// The status's browser field on a temp dir through `test-util`'s
+    /// `profile_exists_in`, so it never reads the owner's real data dir.
+    #[test]
+    fn auth_status_reports_the_kept_browser_profile() {
+        let (root, profile) = profile_under_temp("status");
+        let exists = || pk_cli_browser::profile_exists_in(&root, config::BIN);
+        assert_eq!(browser_profile_status(false, exists), (Some(false), None));
+        assert!(!root.exists(), "asking creates nothing");
+
+        std::fs::create_dir_all(&profile).unwrap();
+        let (field, line) = browser_profile_status(false, exists);
+        assert_eq!((field, line), (Some(true), None));
+        let mut status = AuthStatus::new(true, false, AuthMethod::BrowserSession);
+        status.browser_profile = field;
+        assert_eq!(status.to_json()["browser_profile"], true);
+
+        // A profile that needs repair does not fail the status: the field is
+        // left out, and the rest of the status still reports.
+        std::fs::remove_dir(&profile).unwrap();
+        std::fs::write(&profile, "x").unwrap();
+        let (field, line) = browser_profile_status(false, exists);
+        assert_eq!(field, None);
+        assert!(line.unwrap().starts_with("warning: "));
+        status.browser_profile = field;
+        assert!(status.to_json().get("browser_profile").is_none());
+        assert_eq!(status.to_json()["schema"], "auth-status/v1");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// While the keychain service is overridden, the status reads nothing about
+    /// the real profile, and the line says so.
+    #[test]
+    fn auth_status_reports_nothing_about_the_real_profile_under_a_service_override() {
+        let (field, line) = browser_profile_status(true, || -> Result<bool, BrowserError> {
+            panic!("the real profile must not be read under a service override")
+        });
+        assert_eq!(field, None);
+        assert_eq!(
+            line.as_deref(),
+            Some("SFI_KEYCHAIN_SERVICE is set, so the real browser profile is not reported")
+        );
     }
 
     /// The logout's browser step on a temp dir through `test-util`'s
