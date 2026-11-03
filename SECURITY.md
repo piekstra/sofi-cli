@@ -42,10 +42,21 @@ Ctrl-C force-quits it. The port exists only while you are signing in.
 **The browser profile stays on disk between sign-ins**, so SoFi remembers the
 device. It lives at `~/Library/Application Support/piekstra.sfi/browser-profile`
 on macOS (`$XDG_DATA_HOME/piekstra.sfi/browser-profile`, or under
-`~/.local/share`, on Linux) and holds SoFi's cookies, its session among them,
-and whatever the site keeps in `localStorage`. Chrome encrypts cookies at rest
-(on macOS with the "Chrome Safe Storage" key in the login keychain) but not
-`localStorage`, which only the directory's mode protects. So:
+`~/.local/share`, on Linux). It is a full Chrome profile, so it holds more than
+the session:
+
+- **Cookies**, SoFi's session among them. Chrome encrypts these at rest, on macOS
+  with the "Chrome Safe Storage" key in the login keychain.
+- **Browsing history with full URLs including query strings, the HTTP cache and
+  site storage** (`localStorage`, IndexedDB). Chrome's cookie encryption does not
+  cover these, and the directory's `0700` mode is their only protection. The
+  cache can hold what SoFi's pages loaded during a sign-in.
+- **It sits where ordinary backups look.** Time Machine and home-directory
+  backups usually include this directory, so a copy can outlive the profile, and
+  `sfi auth logout` cannot reach a backup. Exclude the directory from backups, or
+  use `--fresh-profile`, if that matters to you.
+
+So:
 
 - The profile is created `0700`, and a launch is refused when it is a symlink,
   is not your user's or is not `0700`.
@@ -53,7 +64,15 @@ and whatever the site keeps in `localStorage`. Chrome encrypts cookies at rest
   in it, is refused (exit 1).
 - `sfi auth logout` removes it, after clearing the keychain items, and refuses
   while it is in use or when it is a symlink or another user's (exit 1). The
-  message names the path and what to do.
+  error says the session is already cleared and only the profile remains, names
+  the path and says how to finish.
+- A sign-in that fails leaves it in place. A timeout or a closed window says so
+  and names `sfi auth logout`, which removes it and clears the stored session
+  too. `sfi auth status` does not report it: cli-common v0.16.0 has no call that
+  says whether a profile exists.
+- A `SOFI` cookie left in it from an earlier sign-in is not trusted alone: the
+  capture accepts a session only on a working validation read, or with
+  `--fresh-profile` on the cookie when that read is inconclusive.
 - `--fresh-profile` runs one sign-in in a scratch profile instead, created
   `0700`, exclusively, under an unpredictable name in the temp dir, and removed
   when the window closes. If it cannot be removed, `sfi` prints a warning naming

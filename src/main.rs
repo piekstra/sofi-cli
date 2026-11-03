@@ -105,7 +105,9 @@ enum AuthCmd {
     /// Report credential/session state (auth-status/v1).
     Status(StatusArgs),
     /// Clear the cached session and remove the kept browser profile; --forget
-    /// also removes stored credentials.
+    /// also removes stored credentials. If the profile is in use or needs
+    /// repair, the rest is still cleared and this exits 1: fix that and run it
+    /// again.
     Logout(LogoutArgs),
     /// Raw keychain write for rotation / headless setup.
     SetCredential(SetCredentialArgs),

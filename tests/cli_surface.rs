@@ -135,6 +135,17 @@ fn fresh_profile_requires_the_browser_flag() {
         .stderr(contains("--browser"));
 }
 
+/// A logout whose profile removal is refused has already cleared the rest, and
+/// its help says so before anyone runs into it.
+#[test]
+fn logout_help_says_a_refused_profile_leaves_the_rest_cleared() {
+    sfi()
+        .args(["auth", "logout", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("the rest is still cleared and this exits 1"));
+}
+
 /// `--browser` harvests a whole session, so it can't be combined with the
 /// single-code resume or a username; the conflict is a usage error, caught
 /// before any keychain/network/browser work.

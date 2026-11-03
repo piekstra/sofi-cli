@@ -285,7 +285,8 @@ pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<
         store.save(&Config::default())?;
     }
 
-    // Last, so a refusal (its window still open) leaves the rest done.
+    // Last, so a refusal (its window still open) leaves the rest done, and its
+    // error says so.
     let line = logout_browser(forget, || pk_cli_browser::forget_profile(config::BIN))?;
     if !common.quiet {
         eprintln!("{line}");
@@ -293,17 +294,31 @@ pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<
     Ok(())
 }
 
-/// `auth logout`'s browser step. The profile a `--browser` sign-in keeps holds
-/// SoFi's own cookies (its remembered device and session), so a logout removes
-/// it too and the next sign-in starts signed out. The removal is passed in:
-/// the binary binds it to `forget_profile(BIN)`, the tests to
-/// `forget_profile_in` under a temp dir, so a test never removes the owner's
-/// real profile. Returns the status line.
+/// `auth logout`'s browser step. The profile a `--browser` sign-in keeps is a
+/// full Chrome profile: SoFi's own cookies (its remembered device and session),
+/// and browsing history with full URLs, the HTTP cache and site storage, which
+/// Chrome's cookie encryption does not cover. So a logout removes it too, and
+/// the next sign-in starts signed out. The removal is passed in: the binary
+/// binds it to `forget_profile(BIN)`, the tests to `forget_profile_in` under a
+/// temp dir, so a test never removes the owner's real profile. Returns the
+/// status line. A refusal comes last, so its error (exit 1) says what is already
+/// cleared and how to finish.
 fn logout_browser(
     forgot_credentials: bool,
     forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
 ) -> Result<String, CliError> {
-    let removed = forget_profile()?;
+    let removed = forget_profile().map_err(|e| {
+        CliError::Other(format!(
+            "the session is already cleared{}; only the browser profile remains: {e}. \
+             Once that is fixed, run `{} auth logout` again to finish.",
+            if forgot_credentials {
+                " and the stored credentials forgotten"
+            } else {
+                ""
+            },
+            config::BIN
+        ))
+    })?;
     Ok(format!(
         "logged out{}{}",
         if forgot_credentials {
@@ -517,20 +532,32 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// A profile in use refuses the logout's last step with the crate's
-    /// message, which says what to close, and exit 1.
+    /// A profile in use refuses the logout's last step, exit 1. The session
+    /// is gone by then, so the error says that first, then what is left, the
+    /// crate's reason and how to finish.
     #[test]
     fn logout_reports_a_profile_in_use() {
-        let err = logout_browser(false, || {
+        let in_use = || {
             Err(BrowserError::ProfileInUse(
                 "a Chrome (pid 7) is still running in dummy-profile".into(),
             ))
-        })
-        .unwrap_err();
+        };
+        let err = logout_browser(false, in_use).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(
             err.to_string(),
-            "a Chrome (pid 7) is still running in dummy-profile"
+            "the session is already cleared; only the browser profile remains: a Chrome (pid \
+             7) is still running in dummy-profile. Once that is fixed, run `sfi auth logout` \
+             again to finish."
+        );
+        let err = logout_browser(true, in_use).unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert!(
+            err.to_string().starts_with(
+                "the session is already cleared and the stored credentials forgotten; only the \
+                 browser profile remains: "
+            ),
+            "{err}"
         );
     }
 
@@ -550,6 +577,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert!(err.to_string().contains("refusing to remove it"), "{err}");
+        assert!(err.to_string().contains("only the browser profile remains"));
         assert!(target.exists() && profile.symlink_metadata().is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }

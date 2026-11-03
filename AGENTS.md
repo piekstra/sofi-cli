@@ -121,14 +121,22 @@ DevTools protocol and stores them in the keychain (`session`).
   `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real
   profile. `SFI_KEYCHAIN_SERVICE` renames the keychain service only, so `sfi
   auth logout` under it still removes the real profile: set `HOME` to a temp
-  dir first.
+  dir first. It is a full Chrome profile: history with full URLs, the HTTP cache
+  and site storage sit outside Chrome's cookie encryption (SECURITY.md). A
+  timed-out or closed-window sign-in leaves it and its error says so
+  (`note_kept_profile`). A refused logout's error says the session is already
+  cleared. `auth status` does not report the profile: cli-common v0.16.0 has no
+  call for it, and sfi must not work out the path itself.
 - The capture reads only `www.sofi.com` pages (never the Auth0 login host),
   gates on the `SOFI` bearer cookie, and reads the whole `sofi.com` jar (both
   `login.sofi.com` and `www.sofi.com` — docs/api.md §2.5);
   `Session::from_pairs` keeps the four session cookies. Before the tab closes
   it validates against a **swappable** read (`SFI_VALIDATE_PATH`, default the
-  accounts collection); a 404 there doesn't block the login, since the read
-  endpoints are themselves unverified.
+  accounts collection). In a scratch profile a 404 there doesn't block the
+  login, since the read endpoints are themselves unverified. In the kept profile
+  an inconclusive read keeps waiting, because the `SOFI` cookie may be left from
+  an earlier sign-in. The capture reads no `localStorage`; keep it that way, or
+  a stale token bundle in the kept profile becomes readable on page load.
 - The GraphQL header recipe comes from the first `/bff/graphql` request a
   `www.sofi.com` page makes; the tab is held open up to 25 s for one. Only
   header names and the CSRF cookie's name are stored.

@@ -68,16 +68,25 @@ the anti-bot checks happy. The window and the capture come from cli-common's
 macOS and `$XDG_DATA_HOME/piekstra.sfi/browser-profile` (or under
 `~/.local/share`) on Linux. SoFi's own cookies stay there between sign-ins, so
 a later `--browser` asks for less, often nothing: the window opens, the app
-loads signed in, the session is read and the window closes. That is a trade: a
-profile on disk that holds SoFi's cookies, for far fewer sign-ins. On Windows
-every sign-in uses a scratch profile.
+loads signed in, the session is read and the window closes. On Windows every
+sign-in uses a scratch profile.
+
+That is a trade: far fewer sign-ins, for a full Chrome profile on disk. Besides
+SoFi's cookies, it holds browsing history with full URLs including query
+strings, the HTTP cache and site storage. Chrome's cookie encryption does not
+cover those, so `0700` is their only protection, and the directory is one
+ordinary backups usually include. See [SECURITY.md](SECURITY.md).
 
 - `sfi auth login --browser --fresh-profile` signs in through a scratch profile
   deleted afterwards, and leaves the kept one alone. SoFi sees a new device, so
   expect its full sign-in.
 - `sfi auth logout` removes the kept profile too, so the next sign-in starts
   signed out. It refuses while a sign-in or a Chrome is using the profile (exit
-  1, after clearing the keychain session): close that window and log out again.
+  1): the keychain session is already cleared and only the profile remains, so
+  close that window and log out again.
+- A sign-in that times out or whose window is closed leaves the kept profile in
+  place, and says so. `sfi auth logout` removes it, and clears the stored
+  session too. `sfi auth status` does not report the profile.
 
 Login and the balance / interest / statement-list reads are **verified live**
 (2026-08-24). While you are signed in, `sfi` also watches the app's pages for

@@ -5,6 +5,13 @@
 //! app's own request. Launching Chrome, the kept profile (or a scratch one with
 //! `--fresh-profile`), Ctrl-C and the teardown are the crate's.
 //!
+//! The kept profile is a full Chrome profile, kept on disk: cookies, and browsing
+//! history with full URLs including query strings, the HTTP cache and site
+//! storage, which Chrome's cookie encryption does not cover and only the
+//! directory's `0700` mode protects. It also means a `SOFI` cookie can be left
+//! from an earlier sign-in, so in a kept profile only a working validation read
+//! proves the owner is in ([`confirm_outcome`]).
+//!
 //! # Why a browser is the supported path
 //!
 //! SoFi's login is an **Auth0 Universal Login** on `login.sofi.com`, fronted by
@@ -35,7 +42,7 @@
 
 use std::time::Duration;
 
-use pk_cli_browser::{Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT};
+use pk_cli_browser::{BrowserError, Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT};
 use pk_cli_core::CliError;
 
 use crate::client::{
@@ -87,7 +94,7 @@ const CLIENT_MANAGED_HEADERS: [&str; 11] = [
 /// `sofi.com` jar as the session, the app's first `/bff/graphql` request for
 /// the recipe, and [`confirm`] before the tab closes. `quiet` suppresses the
 /// validation note the confirm hook may print.
-fn browser_capture(quiet: bool) -> Result<Capture, CliError> {
+fn browser_capture(kept_profile: bool, quiet: bool) -> Result<Capture, CliError> {
     Ok(Capture::new(LABEL, HostRule::exact(APP_HOST)?)
         .cookie(format!("https://{APP_HOST}/"), SESSION_COOKIE)
         .cookie_jar(JAR_DOMAIN)
@@ -96,7 +103,7 @@ fn browser_capture(quiet: bool) -> Result<Capture, CliError> {
             RECIPE_OBSERVE_DEADLINE,
         )
         .hint(SIGN_IN_HINT)
-        .confirm(move |candidate| confirm(candidate, quiet)))
+        .confirm(move |candidate| confirm(candidate, kept_profile, quiet)))
 }
 
 /// Open the browser, wait for the owner to finish logging in, and return a
@@ -104,14 +111,17 @@ fn browser_capture(quiet: bool) -> Result<Capture, CliError> {
 /// was seen. `fresh_profile` runs this sign-in in a scratch profile instead of
 /// the one sfi keeps. `quiet` suppresses the progress lines on stderr.
 pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<Session, CliError> {
+    // The crate keeps a profile on unix only; elsewhere every sign-in is scratch.
+    let kept_profile = !fresh_profile && cfg!(unix);
     let captured = pk_cli_browser::capture(
         Launch::new(config::BIN)
             .url(LOGIN_PAGE_URL)
             .fresh_profile(fresh_profile)
             .quiet(quiet),
-        &browser_capture(quiet)?,
+        &browser_capture(kept_profile, quiet)?,
         DEFAULT_TIMEOUT,
-    )?;
+    )
+    .map_err(|e| note_kept_profile(e, kept_profile))?;
     let session = session_from_capture(&captured)?;
     if !quiet {
         match &session.graphql_recipe {
@@ -120,6 +130,24 @@ pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<Session, CliE
         }
     }
     Ok(session)
+}
+
+/// A sign-in that timed out or lost its window still leaves the kept profile on
+/// disk, with whatever that attempt put there, so its error says so and names
+/// the way to remove it. The exit code stays the crate's.
+fn note_kept_profile(err: BrowserError, kept_profile: bool) -> BrowserError {
+    let note = |message: String| {
+        format!(
+            "{message} The kept browser profile stays on disk; `{} auth logout` removes it, and \
+             clears the stored session too.",
+            config::BIN
+        )
+    };
+    match err {
+        BrowserError::TimedOut(m) if kept_profile => BrowserError::TimedOut(note(m)),
+        BrowserError::WindowClosed(m) if kept_profile => BrowserError::WindowClosed(note(m)),
+        other => other,
+    }
 }
 
 /// The session a capture hands over: the jar's session cookies, with the
@@ -157,8 +185,14 @@ fn session_from_jar(captured: &Captured) -> Option<Session> {
 /// The confirm hook: validate the candidate session with one read of the
 /// configured validation path against the live API before the tab closes
 /// ([`confirm_with`]).
-fn confirm(candidate: &Captured, quiet: bool) -> Confirm {
-    confirm_with(candidate, quiet, &validation_path(), Sofi::new)
+fn confirm(candidate: &Captured, kept_profile: bool, quiet: bool) -> Confirm {
+    confirm_with(
+        candidate,
+        quiet,
+        kept_profile,
+        &validation_path(),
+        Sofi::new,
+    )
 }
 
 /// The confirm hook with the validation read's path and the client it goes
@@ -169,6 +203,7 @@ fn confirm(candidate: &Captured, quiet: bool) -> Confirm {
 fn confirm_with(
     candidate: &Captured,
     quiet: bool,
+    kept_profile: bool,
     path: &str,
     client: impl FnOnce() -> Result<Sofi, CliError>,
 ) -> Confirm {
@@ -177,7 +212,7 @@ fn confirm_with(
             "the {JAR_DOMAIN} jar holds no {SESSION_COOKIE} cookie yet"
         ));
     };
-    let (answer, note) = confirm_outcome(validate(client, &session, path), path);
+    let (answer, note) = confirm_outcome(validate(client, &session, path), path, kept_profile);
     if let (Some(note), false) = (note, quiet) {
         eprintln!("note: {note}");
     }
@@ -190,17 +225,36 @@ fn confirm_with(
 /// - the read worked: capture the session;
 /// - the read answered as signed out: keep the tab open and ask again next
 ///   poll (the reason is named if the wait times out);
-/// - the read was inconclusive: capture the session on the `SOFI` cookie, and
-///   say so;
+/// - the read was inconclusive, in a scratch profile: capture the session on the
+///   `SOFI` cookie, and say so. That profile started empty, so the cookie came
+///   from this sign-in;
+/// - the read was inconclusive, in a kept profile: keep the tab open and ask
+///   again next poll. The cookie may be left from an earlier sign-in, so without
+///   a working read it proves nothing;
 /// - the client could not be built: end the wait with that error.
-fn confirm_outcome(validated: Result<Probe, CliError>, path: &str) -> (Confirm, Option<String>) {
+fn confirm_outcome(
+    validated: Result<Probe, CliError>,
+    path: &str,
+    kept_profile: bool,
+) -> (Confirm, Option<String>) {
     match validated {
         Ok(Probe::Ready) => (Confirm::Ready, None),
         Ok(Probe::NotYet) => (
             Confirm::NotYet(format!("the validation read {path} answered as signed out")),
             None,
         ),
-        Ok(Probe::Unverifiable(why)) => (Confirm::Ready, Some(why)),
+        Ok(Probe::Unverifiable(why)) if kept_profile => (
+            Confirm::NotYet(format!(
+                "{why}; the kept browser profile's {SESSION_COOKIE} cookie may be from an \
+                 earlier sign-in, so it was not accepted without that read (--fresh-profile \
+                 accepts it)"
+            )),
+            None,
+        ),
+        Ok(Probe::Unverifiable(why)) => (
+            Confirm::Ready,
+            Some(format!("{why}; accepting on the {SESSION_COOKIE} cookie")),
+        ),
         Err(e) => (Confirm::Fail(e), None),
     }
 }
@@ -307,12 +361,9 @@ fn probe_outcome(res: &Result<serde_json::Value, CliError>, path: &str) -> Probe
         Err(CliError::Auth(_)) => Probe::NotYet,
         Err(CliError::NotFound(_)) => Probe::Unverifiable(format!(
             "the validation read {path} returned 404 — that endpoint is unverified \
-             (set SFI_VALIDATE_PATH to a known read); accepting on the {SESSION_COOKIE} cookie"
+             (set SFI_VALIDATE_PATH to a known read)"
         )),
-        Err(e) => Probe::Unverifiable(format!(
-            "the validation read {path} was inconclusive ({e}); accepting on the \
-             {SESSION_COOKIE} cookie"
-        )),
+        Err(e) => Probe::Unverifiable(format!("the validation read {path} was inconclusive ({e})")),
     }
 }
 
@@ -346,7 +397,7 @@ mod tests {
     #[test]
     fn the_browser_capture_is_well_formed() {
         for quiet in [false, true] {
-            let capture = browser_capture(quiet).unwrap();
+            let capture = browser_capture(false, quiet).unwrap();
             capture.validate().unwrap();
             assert_eq!(capture.label(), "SoFi");
         }
@@ -493,11 +544,11 @@ mod tests {
     fn the_confirm_mapping_follows_the_probe() {
         let path = "/money/api/public/v2/accounts";
 
-        let (answer, note) = confirm_outcome(Ok(Probe::Ready), path);
+        let (answer, note) = confirm_outcome(Ok(Probe::Ready), path, false);
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert_eq!(note, None);
 
-        let (answer, note) = confirm_outcome(Ok(Probe::NotYet), path);
+        let (answer, note) = confirm_outcome(Ok(Probe::NotYet), path, false);
         match answer {
             Confirm::NotYet(reason) => {
                 assert_eq!(
@@ -509,11 +560,11 @@ mod tests {
         }
         assert_eq!(note, None);
 
-        let (answer, note) = confirm_outcome(Ok(Probe::Unverifiable("why".into())), path);
+        let (answer, note) = confirm_outcome(Ok(Probe::Unverifiable("why".into())), path, false);
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
-        assert_eq!(note.as_deref(), Some("why"));
+        assert_eq!(note.as_deref(), Some("why; accepting on the SOFI cookie"));
 
-        let (answer, note) = confirm_outcome(Err(CliError::Other("no client".into())), path);
+        let (answer, note) = confirm_outcome(Err(CliError::Other("no client".into())), path, false);
         match answer {
             Confirm::Fail(e) => {
                 assert_eq!(e.exit_code(), 1);
@@ -531,7 +582,7 @@ mod tests {
     fn a_validation_answer_maps_to_the_confirm_answer() {
         let path = "/x";
         let confirm_for = |res: Result<serde_json::Value, CliError>| {
-            confirm_outcome(Ok(probe_outcome(&res, path)), path)
+            confirm_outcome(Ok(probe_outcome(&res, path)), path, false)
         };
         let (answer, _) = confirm_for(Err(CliError::Auth("401".into())));
         assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
@@ -750,7 +801,9 @@ mod tests {
         body: &str,
     ) -> (Confirm, String) {
         let (base, server) = loopback(status, content_type, body);
-        let answer = confirm_with(candidate, true, VALIDATION_PATH, || Sofi::with_base(&base));
+        let answer = confirm_with(candidate, true, false, VALIDATION_PATH, || {
+            Sofi::with_base(&base)
+        });
         let head = server
             .join()
             .expect("the loopback server ran")
@@ -772,8 +825,8 @@ mod tests {
         ] {
             for quiet in [false, true] {
                 let answers = [
-                    confirm(&candidate, quiet),
-                    confirm_with(&candidate, quiet, VALIDATION_PATH, || {
+                    confirm(&candidate, false, quiet),
+                    confirm_with(&candidate, quiet, false, VALIDATION_PATH, || {
                         panic!("no client is built before the SOFI cookie is set")
                     }),
                 ];
@@ -833,11 +886,69 @@ mod tests {
         }
     }
 
+    /// In a kept profile a `SOFI` cookie may be left from an earlier sign-in, so
+    /// an inconclusive read keeps the wait going instead of storing it, and the
+    /// reason, shown if the wait times out, names the way past it. A working
+    /// read and a signed-out answer mean what they mean in a scratch profile.
+    #[test]
+    fn a_kept_profiles_cookie_is_not_accepted_without_a_working_read() {
+        let path = "/x";
+        let kept = |res: Result<serde_json::Value, CliError>| {
+            confirm_outcome(Ok(probe_outcome(&res, path)), path, true)
+        };
+        for res in [
+            Err(CliError::NotFound("404".into())),
+            Err(CliError::Upstream("500".into())),
+        ] {
+            let (answer, note) = kept(res);
+            match answer {
+                Confirm::NotYet(reason) => {
+                    assert!(reason.contains("the validation read /x"), "{reason}");
+                    assert!(reason.contains("--fresh-profile"), "{reason}");
+                    assert!(!reason.contains("accepting"), "{reason}");
+                }
+                other => panic!("expected NotYet, got {other:?}"),
+            }
+            assert_eq!(note, None);
+        }
+        let (answer, _) = kept(Ok(json!({})));
+        assert!(matches!(answer, Confirm::Ready), "{answer:?}");
+        let (answer, _) = kept(Err(CliError::Auth("401".into())));
+        assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+    }
+
+    /// A failed sign-in in a kept profile says the profile stays and how to
+    /// remove it, keeping the crate's message and exit code. A scratch profile
+    /// is gone by then, so it says nothing, and other errors pass unchanged.
+    #[test]
+    fn a_failed_sign_in_says_the_kept_profile_stays() {
+        let failures = [
+            BrowserError::TimedOut("timed out.".into()),
+            BrowserError::WindowClosed("window closed.".into()),
+        ];
+        for err in failures {
+            let plain = err.to_string();
+            let noted = note_kept_profile(err, true);
+            assert_eq!(noted.exit_code(), 3);
+            assert_eq!(
+                noted.to_string(),
+                format!(
+                    "{plain} The kept browser profile stays on disk; `sfi auth logout` removes \
+                     it, and clears the stored session too."
+                )
+            );
+        }
+        let scratch = note_kept_profile(BrowserError::TimedOut("timed out.".into()), false);
+        assert_eq!(scratch.to_string(), "timed out.");
+        let canceled = note_kept_profile(BrowserError::Canceled, true);
+        assert_eq!(canceled.to_string(), "browser login canceled");
+    }
+
     /// A client that cannot be built ends the wait with its own error rather
     /// than holding the tab open: the hook's only `Fail`.
     #[test]
     fn a_client_that_cannot_be_built_ends_the_wait() {
-        let answer = confirm_with(&signed_in(), true, VALIDATION_PATH, || {
+        let answer = confirm_with(&signed_in(), true, false, VALIDATION_PATH, || {
             Err(CliError::Other("dummy: no HTTP client".into()))
         });
         match answer {

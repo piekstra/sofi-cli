@@ -96,7 +96,9 @@ over and a later `--browser` should need less input. **UNVERIFIED-LIVE:** no
 second sign-in has run in a kept profile yet, so how far SoFi lets one go (and
 whether `/u/login` forwards a signed-in browser to `www.sofi.com`) is unknown.
 `--fresh-profile` runs one sign-in in a scratch profile, and `sfi auth logout`
-removes the kept one.
+removes the kept one. It is a full Chrome profile: SECURITY.md lists what it
+holds. A sign-in that times out or loses its window leaves it in place, and its
+error says so and names `sfi auth logout`.
 
 **Trust boundary:** the CDP debug port has no auth of its own, so the profile
 is owner-only: `0700`, and refused when it is a symlink, another user's or any
@@ -150,10 +152,15 @@ The classification (`browser::probe_outcome`, pure/tested):
 - a real JSON read → **accept**;
 - HTML / a login redirect / 401 → **keep waiting** (not signed in yet; the tab
   stays open and the read is retried on the next poll);
-- **404** (the default endpoint doesn't exist) or another transient error →
-  **accept on the `SOFI` bearer cookie**, with a note, so an unverified
-  validation endpoint can't block a genuine login. After sign-in, live-probe
-  the real read (`sfi api GET <path>`) and, if useful, set `SFI_VALIDATE_PATH`.
+- **404** (the default endpoint doesn't exist) or another transient error, in a
+  **scratch profile** (`--fresh-profile`) → **accept on the `SOFI` bearer
+  cookie**, with a note, so an unverified validation endpoint can't block a
+  genuine login. That profile started empty, so the cookie is this sign-in's.
+  After sign-in, live-probe the real read (`sfi api GET <path>`) and, if useful,
+  set `SFI_VALIDATE_PATH`.
+- the same answer in the **kept profile** → **keep waiting**: the cookie may be
+  left from an earlier sign-in, so it proves nothing without a working read. If
+  the wait times out, the error names the read and `--fresh-profile`.
 
 ### 2.6 The live 404 — recorded 2026-08-24
 
