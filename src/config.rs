@@ -82,6 +82,17 @@ pub fn service_overridden() -> bool {
     service_override(std::env::var(SERVICE_ENV).ok().as_deref()).is_some()
 }
 
+/// Whether the real config is out of reach: a service [`SERVICE_ENV`] names is a
+/// test namespace, so nothing under it writes the real config. A `--config` the
+/// caller named is not the real one.
+pub fn keeps_real_config(explicit_config: bool) -> bool {
+    keeps_config(service_overridden(), explicit_config)
+}
+
+fn keeps_config(service_overridden: bool, explicit_config: bool) -> bool {
+    service_overridden && !explicit_config
+}
+
 /// On-disk, non-secret settings.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -155,6 +166,16 @@ mod tests {
             credential_store_for(Some("piekstra.sfi-empty")).service(),
             "piekstra.sfi-empty"
         );
+    }
+
+    /// An override protects the real config, but a `--config` the caller named
+    /// is theirs to write.
+    #[test]
+    fn only_an_override_without_an_explicit_config_keeps_the_config() {
+        assert!(keeps_config(true, false));
+        assert!(!keeps_config(true, true));
+        assert!(!keeps_config(false, false));
+        assert!(!keeps_config(false, true));
     }
 
     /// A blank value is no override: the real service is in use, as

@@ -69,16 +69,19 @@ So:
 - One sign-in uses it at a time. A second, or a launch while a Chrome still runs
   in it, is refused (exit 1).
 - `sfi auth logout` removes it, and refuses while it is in use or when it is a
-  symlink or another user's. Every step of a logout is attempted, so a refusal or
-  a failed keychain or config step leaves the rest done. The error says what was
-  cleared and what remains, names the path and says how to finish, with the first
-  failure's exit code.
-- A sign-in that fails for any reason leaves it in place, possibly signed in: a
-  timeout, a closed window, Ctrl-C, a validation read that ends the wait, a
-  keychain write that fails after the capture. The error says so and names `sfi
-  auth logout`, which removes it and clears the stored session too. A second
-  Ctrl-C force-quits with no message. `sfi auth status` does not report it:
-  cli-common v0.16.0 has no call that says whether a profile exists.
+  symlink or another user's. Every step of a logout is attempted, so a refusal
+  or a failed keychain or config step leaves the rest done. The error says what
+  was cleared and what remains, names the path and says how to finish, with the
+  first failure's exit code. A logout does not parse the config, so a file that
+  can't be parsed stops nothing, and `--forget` overwrites it.
+- A sign-in that fails once Chrome may have used it leaves it in place, possibly
+  signed in: a timeout, a closed window, Ctrl-C, a validation read that ends the
+  wait, a keychain write that fails after the capture. The error says so and
+  names `sfi auth logout`, which removes it and clears the stored session too. A
+  second Ctrl-C force-quits with no message. A launch refused before Chrome uses
+  it (no Chrome, a profile in use or needing repair) says nothing about it,
+  since `auth logout` would refuse the same profile. `sfi auth status` does not
+  report it: cli-common v0.16.0 has no call that says whether a profile exists.
 - A `SOFI` cookie left in it from an earlier sign-in is not trusted alone. In the
   kept profile only a working validation read accepts a session, and a 200 with
   no data is not one, so an unverified session cannot replace a working one. The
@@ -108,13 +111,15 @@ returns a statement link. The Claude Desktop extension (`.mcpb`) takes no
 settings and so holds no credential of its own; on macOS its bundled binary
 needs the user's approval, once, to read the `piekstra.sfi` keychain item.
 
-`SFI_KEYCHAIN_SERVICE` renames the keychain service read and written, for
-tests and for checking the error paths against an empty service. It carries
-no secret. A service it names is a test namespace, and must not read or change
-the real kept browser profile. While it names one, `sfi auth logout` clears that
-service, leaves the real profile in place and says so, and `sfi auth login
---browser` uses a scratch profile, as with `--fresh-profile`, and says so in one
-line on stderr. A blank value names no service.
+`SFI_KEYCHAIN_SERVICE` renames the keychain service read and written, for tests
+and for checking the error paths against an empty service. It carries no secret.
+A service it names is a test namespace, and must not read or change the real
+kept browser profile or the real config. While it names one, `sfi auth logout`
+clears that service, leaves the real profile in place and says so, `sfi auth
+login --browser` uses a scratch profile, as with `--fresh-profile`, and says so
+in one line on stderr, and neither `auth logout --forget` nor a sign-in writes
+the real config: each says it was left. A `--config` you name is still written.
+A blank value names no service.
 
 ## What this tool does not do
 

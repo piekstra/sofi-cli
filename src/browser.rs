@@ -44,7 +44,7 @@
 
 use std::time::Duration;
 
-use pk_cli_browser::{Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT};
+use pk_cli_browser::{BrowserError, Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT};
 use pk_cli_core::CliError;
 
 use crate::client::{
@@ -112,17 +112,17 @@ fn browser_capture(kept_profile: bool, quiet: bool) -> Result<Capture, CliError>
 /// validated [`Session`], with the app's GraphQL header recipe when a request
 /// was seen. `fresh_profile` runs this sign-in in a scratch profile instead of
 /// the one sfi keeps. `quiet` suppresses the progress lines on stderr.
-pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<Session, CliError> {
+pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<Session, BrowserError> {
     let kept_profile = runs_in_kept_profile(fresh_profile);
     let captured = pk_cli_browser::capture(
         Launch::new(config::BIN)
             .url(LOGIN_PAGE_URL)
             .fresh_profile(fresh_profile)
             .quiet(quiet),
-        &browser_capture(kept_profile, quiet)?,
+        &browser_capture(kept_profile, quiet).map_err(BrowserError::Handler)?,
         DEFAULT_TIMEOUT,
     )?;
-    let session = session_from_capture(&captured)?;
+    let session = session_from_capture(&captured).map_err(BrowserError::Handler)?;
     if !quiet {
         match &session.graphql_recipe {
             Some(recipe) => eprintln!("{}", recipe_note(recipe)),
@@ -170,17 +170,31 @@ pub fn kept_profile_note(fresh_profile: bool) -> Option<String> {
 }
 
 /// Runs a browser sign-in, from opening the window through storing the session,
-/// and adds `note` to whatever fails, keeping the exit code. Every failure goes
-/// through here (a timeout, a closed window, Ctrl-C, a confirm hook ending the
-/// wait, a keychain write after the capture), so a new failure path can't miss
-/// the note. The ones most likely to leave a live session are the last two.
+/// and adds `note` to whatever fails once Chrome may have used the profile,
+/// keeping the exit code. A failure from outside the crate, such as a keychain
+/// write after the capture, comes in as [`BrowserError::Handler`]. Everything but
+/// the listed refusals gets the note, so a new failure path can't miss it.
+///
+/// The refusals come before Chrome uses the profile. They leave nothing new, and
+/// the note would be false (no Chrome, so no profile) or would point at `auth
+/// logout`, which refuses the same profile after clearing the stored session.
 pub fn noting_kept_profile<T>(
     note: Option<String>,
-    sign_in: impl FnOnce() -> Result<T, CliError>,
+    sign_in: impl FnOnce() -> Result<T, BrowserError>,
 ) -> Result<T, CliError> {
-    sign_in().map_err(|err| match note {
-        Some(note) => with_note(err, &note),
-        None => err,
+    sign_in().map_err(|err| {
+        let before_the_profile_is_used = matches!(
+            err,
+            BrowserError::Invalid(_)
+                | BrowserError::ChromeNotFound(_)
+                | BrowserError::Profile(_)
+                | BrowserError::ProfileInUse(_)
+        );
+        let err = CliError::from(err);
+        match note {
+            Some(note) if !before_the_profile_is_used => with_note(err, &note),
+            _ => err,
+        }
     })
 }
 
@@ -457,7 +471,7 @@ mod tests {
     use std::thread::JoinHandle;
     use std::time::Instant;
 
-    use pk_cli_browser::{BrowserError, CapturedRequest, JarCookie};
+    use pk_cli_browser::{CapturedRequest, JarCookie};
     use serde_json::json;
 
     /// The definition `pk-cli-browser` checks before Chrome starts, checked
@@ -1043,29 +1057,35 @@ mod tests {
         assert_kept_read_fails(answer, "inconclusive");
     }
 
-    /// Every failure of a sign-in in a kept profile carries the note and keeps
-    /// its exit code, the ones most likely to leave a live session included.
+    /// Every failure once Chrome may have used a kept profile carries the note
+    /// and keeps its exit code, the ones most likely to leave a live session
+    /// included.
     #[test]
     fn every_failed_sign_in_says_the_kept_profile_stays() {
         let note = kept_profile_note(false);
-        let cases: Vec<(CliError, i32, &str)> = vec![
+        let cases: Vec<(BrowserError, i32, &str)> = vec![
+            (BrowserError::TimedOut("timed out.".into()), 3, "timed out"),
             (
-                BrowserError::TimedOut("timed out.".into()).into(),
-                3,
-                "timed out",
-            ),
-            (
-                BrowserError::WindowClosed("window closed.".into()).into(),
+                BrowserError::WindowClosed("window closed.".into()),
                 3,
                 "window closed",
             ),
-            (BrowserError::Canceled.into(), 1, "browser login canceled"),
+            (BrowserError::Canceled, 1, "browser login canceled"),
             (
-                BrowserError::Handler(CliError::Upstream("HTTP 429".into())).into(),
+                BrowserError::Launch("dummy launch".into()),
+                1,
+                "dummy launch",
+            ),
+            (
+                BrowserError::Handler(CliError::Upstream("HTTP 429".into())),
                 5,
                 "HTTP 429",
             ),
-            (CliError::Keychain("dummy write".into()), 1, "dummy write"),
+            (
+                BrowserError::Handler(CliError::Keychain("dummy write".into())),
+                1,
+                "dummy write",
+            ),
         ];
         for (err, code, message) in cases {
             let noted = noting_kept_profile::<()>(note.clone(), || Err(err)).unwrap_err();
@@ -1083,12 +1103,32 @@ mod tests {
         assert_eq!(noting_kept_profile(note, || Ok(7)).unwrap(), 7);
     }
 
+    /// A refusal before Chrome uses the profile leaves nothing new, so it says
+    /// nothing about the profile: the note would be false or point at a logout
+    /// that refuses too.
+    #[test]
+    fn a_refusal_before_chrome_uses_the_profile_carries_no_note() {
+        let refusals = [
+            BrowserError::Invalid("dummy invalid".into()),
+            BrowserError::ChromeNotFound("dummy no chrome".into()),
+            BrowserError::Profile("dummy repair".into()),
+            BrowserError::ProfileInUse("dummy in use".into()),
+        ];
+        for err in refusals {
+            let plain = err.to_string();
+            let refused =
+                noting_kept_profile::<()>(kept_profile_note(false), || Err(err)).unwrap_err();
+            assert_eq!(refused.exit_code(), 1, "{plain}");
+            assert_eq!(refused.to_string(), plain);
+        }
+    }
+
     /// A scratch profile is gone by then, so `--fresh-profile` adds nothing.
     #[test]
     fn a_fresh_profile_sign_in_carries_no_note() {
         assert_eq!(kept_profile_note(true), None);
         let err = noting_kept_profile::<()>(kept_profile_note(true), || {
-            Err(BrowserError::TimedOut("timed out.".into()).into())
+            Err(BrowserError::TimedOut("timed out.".into()))
         })
         .unwrap_err();
         assert_eq!(err.to_string(), "timed out.");

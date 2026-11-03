@@ -89,16 +89,16 @@ answered ("2 accounts visible"). The mechanism is cli-common's
    and, once the jar was read, its cookie names (never a value). Closing the
    window is exit 3 too; Ctrl-C cancels (exit 1).
 
-**The kept profile.** Chrome runs in
-`<data dir>/piekstra.sfi/browser-profile`, which stays on disk, so SoFi's own
-cookies (its remembered device, the Auth0 session, Cloudflare's clearance) carry
-over and a later `--browser` should need less input. **UNVERIFIED-LIVE:** no
-second sign-in has run in a kept profile yet, so how far SoFi lets one go (and
-whether `/u/login` forwards a signed-in browser to `www.sofi.com`) is unknown.
-`--fresh-profile` runs one sign-in in a scratch profile, and `sfi auth logout`
-removes the kept one. It is a full Chrome profile: SECURITY.md lists what it
-holds. A sign-in that fails for any reason leaves it in place, and its error says
-so and names `sfi auth logout`.
+**The kept profile.** Chrome runs in `<data dir>/piekstra.sfi/browser-profile`,
+which stays on disk, so SoFi's own cookies (its remembered device, the Auth0
+session, Cloudflare's clearance) carry over and a later `--browser` should need
+less input. **UNVERIFIED-LIVE:** no second sign-in has run in a kept profile
+yet, so how far SoFi lets one go (and whether `/u/login` forwards a signed-in
+browser to `www.sofi.com`) is unknown. `--fresh-profile` runs one sign-in in a
+scratch profile, and `sfi auth logout` removes the kept one. It is a full Chrome
+profile: SECURITY.md lists what it holds. A sign-in that fails once Chrome may
+have used it leaves it in place, and its error says so and names `sfi auth
+logout`. A launch refused before that says nothing about it.
 
 **Trust boundary:** the CDP debug port has no auth of its own, so the profile
 is owner-only: `0700`, and refused when it is a symlink, another user's or any

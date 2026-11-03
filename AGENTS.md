@@ -110,24 +110,28 @@ DevTools protocol and stores them in the keychain (`session`).
   validation read and the recipe derivation are sfi's. Don't re-embed
   DevTools code here: a capture the crate can't express is a cli-common
   change.
-- **The profile is kept between sign-ins**, at
-  `~/Library/Application Support/piekstra.sfi/browser-profile` on macOS
-  (`$XDG_DATA_HOME/piekstra.sfi/browser-profile`, or under `~/.local/share`,
-  on Linux), so SoFi's remembered device and its session carry over and a
-  later `--browser` often needs no input. `--fresh-profile` runs one sign-in
-  in a scratch profile and leaves the kept one alone. `auth logout` removes
-  the kept profile as its last step, through `run_logout`, whose removal
-  is a closure: the binary binds `forget_profile(BIN)`, tests bind
-  `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real
-  profile. A service `SFI_KEYCHAIN_SERVICE` names is a test namespace that must
-  not read or change the real profile: `auth logout` skips the removal and says
-  so, and `auth login --browser` takes a scratch profile and says so
-  (`scratch_profile_choice`). It is a full Chrome profile:
-  history with full URLs, the HTTP cache and site storage sit outside Chrome's
-  cookie encryption, and on Linux with no desktop keyring so does the session
-  cookie (SECURITY.md). A failed sign-in leaves it, and every failure gets the
-  note because the whole sign-in runs inside `noting_kept_profile`. Every logout step is attempted, and a failed logout's error says
-  what was cleared and what remains. `auth status` does not report the profile: cli-common v0.16.0 has no
+- **The profile is kept between sign-ins**, at `~/Library/Application
+  Support/piekstra.sfi/browser-profile` on macOS
+  (`$XDG_DATA_HOME/piekstra.sfi/browser-profile`, or under `~/.local/share`, on
+  Linux), so SoFi's remembered device and its session carry over and a later
+  `--browser` often needs no input. `--fresh-profile` runs one sign-in in a
+  scratch profile and leaves the kept one alone. `auth logout` removes the kept
+  profile as its last step, through `run_logout`, whose removal is a closure:
+  the binary binds `forget_profile(BIN)`, tests bind
+  `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile. A
+  service `SFI_KEYCHAIN_SERVICE` names is a test namespace that must not read or
+  change the real profile or config: `auth logout` skips the removal and says
+  so, `auth login --browser` takes a scratch profile and says so
+  (`scratch_profile_choice`), and neither writes the real config unless
+  `--config` names a file (`keeps_real_config`). The config is loaded only in
+  the commands that use it, so logout runs on a file that can't be parsed. It is
+  a full Chrome profile: history with full URLs, the HTTP cache and site storage
+  sit outside Chrome's cookie encryption, and on Linux with no desktop keyring
+  so does the session cookie (SECURITY.md). A failed sign-in leaves it. The
+  whole sign-in runs inside `noting_kept_profile`, which adds the note to every
+  failure except the refusals before Chrome uses the profile. Every logout step
+  is attempted, and a failed logout's error says what was cleared and what
+  remains. `auth status` does not report the profile: cli-common v0.16.0 has no
   call for it, and sfi must not work out the path itself.
 - The capture reads only `www.sofi.com` pages (never the Auth0 login host),
   gates on the `SOFI` bearer cookie, and reads the whole `sofi.com` jar (both

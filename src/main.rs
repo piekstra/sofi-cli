@@ -274,14 +274,15 @@ fn run(cli: &Cli) -> Result<(), CliError> {
     validate(&cli.command)?;
 
     let store = ConfigStore::new(BIN).with_override(cli.config.clone());
-    let cfg: Config = store.load()?;
 
     match &cli.command {
-        Command::Config(cmd) => commands::misc::config(&cli.common, &store, cfg, config_op(cmd)),
-        Command::Auth(cmd) => auth_cmd(cli, cmd, &store, cfg),
+        Command::Config(cmd) => {
+            commands::misc::config(&cli.common, &store, store.load()?, config_op(cmd))
+        }
+        Command::Auth(cmd) => auth_cmd(cli, cmd, &store),
         _ => {
             // Everything below reads the provider, so it needs a session.
-            let ctx = commands::Ctx::new(cli.common.clone(), cfg, cli.account.clone())?;
+            let ctx = commands::Ctx::new(cli.common.clone(), store.load()?, cli.account.clone())?;
             match &cli.command {
                 Command::Accounts(AccountsCmd::List) => commands::accounts::list(&ctx),
                 Command::Accounts(AccountsCmd::Get { id }) => {
@@ -425,12 +426,16 @@ fn validate(command: &Command) -> Result<(), CliError> {
     }
 }
 
-fn auth_cmd(cli: &Cli, cmd: &AuthCmd, store: &ConfigStore, cfg: Config) -> Result<(), CliError> {
+/// The config is loaded only in the arms that use it, so `auth logout` runs every
+/// step even when the file can't be parsed.
+fn auth_cmd(cli: &Cli, cmd: &AuthCmd, store: &ConfigStore) -> Result<(), CliError> {
+    let keep_config = config::keeps_real_config(cli.config.is_some());
     match cmd {
         AuthCmd::Login(args) => commands::auth::login(
             &cli.common,
             store,
-            cfg,
+            store.load()?,
+            keep_config,
             &commands::auth::LoginInput {
                 base: &args.base,
                 browser: &args.browser,
@@ -440,12 +445,13 @@ fn auth_cmd(cli: &Cli, cmd: &AuthCmd, store: &ConfigStore, cfg: Config) -> Resul
             },
         ),
         AuthCmd::Status(args) => {
+            let cfg: Config = store.load()?;
             commands::auth::status(&cli.common, &cfg, cli.account.as_deref(), args.verify)
         }
-        AuthCmd::Logout(args) => commands::auth::logout(&cli.common, store, args.forget),
-        AuthCmd::SetCredential(args) => {
-            commands::auth::set_credential(&cli.common, store, cfg, args)
+        AuthCmd::Logout(args) => {
+            commands::auth::logout(&cli.common, store, args.forget, keep_config)
         }
+        AuthCmd::SetCredential(args) => commands::auth::set_credential(&cli.common, args),
     }
 }
 

@@ -36,6 +36,7 @@ pub fn login(
     common: &CommonArgs,
     store: &ConfigStore,
     mut cfg: Config,
+    keep_config: bool,
     input: &LoginInput<'_>,
 ) -> Result<(), CliError> {
     let creds = config::credential_store();
@@ -55,7 +56,8 @@ pub fn login(
         let note = crate::browser::kept_profile_note(fresh_profile);
         return crate::browser::noting_kept_profile(note, || {
             let session = crate::browser::capture_session(fresh_profile, common.quiet)?;
-            finish_browser(common, store, &mut cfg, &creds, session)
+            finish_browser(common, store, &mut cfg, keep_config, &creds, session)
+                .map_err(BrowserError::Handler)
         });
     }
 
@@ -81,6 +83,7 @@ pub fn login(
             common,
             store,
             &mut cfg,
+            keep_config,
             &creds,
             &sofi,
             &username,
@@ -101,7 +104,15 @@ pub fn login(
 
     match sofi.login(&username, password.expose(), &device_id, input.channel)? {
         LoginOutcome::Session(session) => finish(
-            common, store, &mut cfg, &creds, &sofi, &username, &device_id, *session,
+            common,
+            store,
+            &mut cfg,
+            keep_config,
+            &creds,
+            &sofi,
+            &username,
+            &device_id,
+            *session,
         ),
         LoginOutcome::NeedsCode { parked, hint } => {
             // Park before anything else, so even an attempt the user abandons
@@ -129,6 +140,7 @@ pub fn login(
                 common,
                 store,
                 &mut cfg,
+                keep_config,
                 &creds,
                 &sofi,
                 &username,
@@ -149,6 +161,7 @@ fn finish(
     common: &CommonArgs,
     store: &ConfigStore,
     cfg: &mut Config,
+    keep_config: bool,
     creds: &CredentialStore,
     sofi: &Sofi,
     username: &str,
@@ -170,9 +183,12 @@ fn finish(
             .and_then(|v| v.as_str())
             .map(str::to_string);
     }
-    store.save(cfg)?;
+    let left = save_signed_in_config(store, cfg, keep_config)?;
 
     if !common.quiet {
+        if let Some(left) = left {
+            eprintln!("{left}");
+        }
         eprintln!(
             "logged in as {username} — {} account{} visible",
             accounts.len(),
@@ -194,6 +210,7 @@ fn finish_browser(
     common: &CommonArgs,
     store: &ConfigStore,
     cfg: &mut Config,
+    keep_config: bool,
     creds: &CredentialStore,
     session: Session,
 ) -> Result<(), CliError> {
@@ -216,9 +233,12 @@ fn finish_browser(
             }
             Err(_) => None,
         };
-    store.save(cfg)?;
+    let left = save_signed_in_config(store, cfg, keep_config)?;
 
     if !common.quiet {
+        if let Some(left) = left {
+            eprintln!("{left}");
+        }
         match account_count {
             Some(n) => eprintln!(
                 "logged in — session captured from the browser ({n} account{} visible)",
@@ -232,6 +252,24 @@ fn finish_browser(
         }
     }
     Ok(())
+}
+
+/// Save what a sign-in learned (who this install is for, an adopted default
+/// account), unless the real config is out of reach. Returns the line saying it
+/// was left.
+fn save_signed_in_config(
+    store: &ConfigStore,
+    cfg: &Config,
+    keep_config: bool,
+) -> Result<Option<String>, CliError> {
+    if keep_config {
+        return Ok(Some(format!(
+            "{} is set, so the real config was left as it is",
+            config::SERVICE_ENV
+        )));
+    }
+    store.save(cfg)?;
+    Ok(None)
 }
 
 pub fn status(
@@ -279,16 +317,42 @@ pub fn status(
     Ok(())
 }
 
-pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<(), CliError> {
+pub fn logout(
+    common: &CommonArgs,
+    store: &ConfigStore,
+    forget: bool,
+    keep_config: bool,
+) -> Result<(), CliError> {
     let creds = config::credential_store();
-    let delete = |key: &'static str| -> Box<dyn FnOnce() -> Result<(), CliError> + '_> {
-        let creds = &creds;
+    let steps = logout_steps(&creds, store, forget, keep_config);
+    let config_left = forget && keep_config;
+    let line = run_logout(
+        forget,
+        config::service_overridden(),
+        config_left,
+        steps,
+        || pk_cli_browser::forget_profile(config::BIN),
+    )?;
+    if !common.quiet {
+        eprintln!("{line}");
+    }
+    Ok(())
+}
+
+/// What a logout clears before the browser profile. The cached session and any
+/// half-finished login always go; a `logout` that leaves a resumable attempt
+/// behind isn't a logout. Nothing here parses the config, so a file that can't be
+/// parsed stops nothing, and `--forget` overwrites it.
+fn logout_steps<'a>(
+    creds: &'a CredentialStore,
+    store: &'a ConfigStore,
+    forget: bool,
+    keep_config: bool,
+) -> Vec<LogoutStep<'a>> {
+    let delete = |key: &'static str| -> Box<dyn FnOnce() -> Result<(), CliError> + 'a> {
         Box::new(move || creds.delete(key).map(drop))
     };
-
-    // The cached session and any half-finished login always go; a `logout`
-    // that leaves a resumable attempt behind isn't a logout.
-    let mut steps: Vec<LogoutStep<'_>> = vec![
+    let mut steps: Vec<LogoutStep<'a>> = vec![
         ("the session", delete(config::SESSION_KEY)),
         ("the parked login", delete(config::PENDING_KEY)),
     ];
@@ -297,19 +361,14 @@ pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<
         steps.push(("the device id", delete(config::DEVICE_KEY)));
         // Clearing the saved identity (username/default account) is part of
         // "forget"; a fresh default config is the empty state.
-        steps.push((
-            "the saved settings",
-            Box::new(|| store.save(&Config::default())),
-        ));
+        if !keep_config {
+            steps.push((
+                "the saved settings",
+                Box::new(|| store.save(&Config::default())),
+            ));
+        }
     }
-
-    let line = run_logout(forget, config::service_overridden(), steps, || {
-        pk_cli_browser::forget_profile(config::BIN)
-    })?;
-    if !common.quiet {
-        eprintln!("{line}");
-    }
-    Ok(())
+    steps
 }
 
 /// One step of `auth logout` before the browser profile: what it clears, and the
@@ -335,6 +394,7 @@ type LogoutStep<'a> = (&'static str, Box<dyn FnOnce() -> Result<(), CliError> + 
 fn run_logout(
     forgot_credentials: bool,
     service_overridden: bool,
+    config_left: bool,
     steps: Vec<LogoutStep<'_>>,
     forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
 ) -> Result<String, CliError> {
@@ -361,8 +421,13 @@ fn run_logout(
     }
     let left_alone = if service_overridden {
         format!(
-            "{} is set, so the real browser profile was left in place",
-            config::SERVICE_ENV
+            "{} is set, so the real browser profile{} left in place",
+            config::SERVICE_ENV,
+            if config_left {
+                " and config were"
+            } else {
+                " was"
+            }
         )
     } else {
         String::new()
@@ -383,7 +448,7 @@ fn run_logout(
     }
     let what_remains = remains
         .iter()
-        .map(|(what, e)| format!("{what}: {e}"))
+        .map(|(what, e)| format!("{what}: {}", inner_message(e)))
         .collect::<Vec<_>>()
         .join("; ");
     // Only the profile left needs no `--forget`: the credentials are gone by then.
@@ -408,15 +473,30 @@ fn run_logout(
         config::BIN,
     );
     let (_, first) = remains.remove(0);
-    Err(crate::browser::rewording(first, |_| message))
+    // The message covers every failure, so it must not open with the kind of the
+    // first. `Keychain` and `Other`, all a real logout produces, both exit 1, so
+    // the plain one keeps the code; the others with a code of their own keep it,
+    // and their kind.
+    Err(match first {
+        CliError::Keychain(_) | CliError::Other(_) => CliError::Other(message),
+        other => crate::browser::rewording(other, |_| message),
+    })
 }
 
-pub fn set_credential(
-    common: &CommonArgs,
-    _store: &ConfigStore,
-    _cfg: Config,
-    args: &SetCredentialArgs,
-) -> Result<(), CliError> {
+/// An error's own message, without the kind its `Display` puts in front.
+fn inner_message(err: &CliError) -> &str {
+    match err {
+        CliError::Usage(m)
+        | CliError::Auth(m)
+        | CliError::NotFound(m)
+        | CliError::Upstream(m)
+        | CliError::ConfirmationRequired(m)
+        | CliError::Keychain(m)
+        | CliError::Other(m) => m,
+    }
+}
+
+pub fn set_credential(common: &CommonArgs, args: &SetCredentialArgs) -> Result<(), CliError> {
     let creds = config::credential_store();
     if creds.get(config::PASSWORD_KEY)?.is_some() && !args.overwrite {
         return Err(CliError::Usage(
@@ -577,7 +657,7 @@ mod tests {
         std::fs::create_dir_all(profile.join("Default")).unwrap();
         let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
         assert_eq!(
-            run_logout(false, false, Vec::new(), forget).unwrap(),
+            run_logout(false, false, false, Vec::new(), forget).unwrap(),
             "logged out; browser profile removed"
         );
         assert!(!profile.exists());
@@ -591,11 +671,11 @@ mod tests {
         let (root, _) = profile_under_temp("none");
         let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
         assert_eq!(
-            run_logout(false, false, Vec::new(), forget).unwrap(),
+            run_logout(false, false, false, Vec::new(), forget).unwrap(),
             "logged out"
         );
         assert_eq!(
-            run_logout(true, false, Vec::new(), forget).unwrap(),
+            run_logout(true, false, false, Vec::new(), forget).unwrap(),
             "logged out and forgot the stored credentials"
         );
     }
@@ -606,7 +686,7 @@ mod tests {
         std::fs::create_dir_all(&profile).unwrap();
         let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
         assert_eq!(
-            run_logout(true, false, Vec::new(), forget).unwrap(),
+            run_logout(true, false, false, Vec::new(), forget).unwrap(),
             "logged out and forgot the stored credentials; browser profile removed"
         );
         std::fs::remove_dir_all(&root).unwrap();
@@ -623,7 +703,7 @@ mod tests {
             ))
         };
         let session: Vec<LogoutStep<'_>> = vec![("the session", Box::new(|| Ok(())))];
-        let err = run_logout(false, false, session, in_use).unwrap_err();
+        let err = run_logout(false, false, false, session, in_use).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(
             err.to_string(),
@@ -631,15 +711,15 @@ mod tests {
              Chrome (pid 7) is still running in dummy-profile. Once that is fixed, run `sfi \
              auth logout` again to finish."
         );
-        let err = run_logout(true, false, Vec::new(), in_use).unwrap_err();
+        let err = run_logout(true, false, false, Vec::new(), in_use).unwrap_err();
         assert!(err
             .to_string()
             .ends_with("run `sfi auth logout` again to finish."));
     }
 
     /// A failed keychain or config step does not stop the logout. Every later
-    /// step runs, the profile included, and the error says what was cleared and
-    /// what remains, with the first failure's exit code.
+    /// step runs, the profile included. The error reads as one message, each
+    /// cause once with no kind prefix, and keeps the first failure's exit code.
     #[test]
     fn logout_attempts_every_step_when_one_fails() {
         let (root, profile) = profile_under_temp("every-step");
@@ -649,7 +729,7 @@ mod tests {
             ("the session", Box::new(|| Ok(()))),
             (
                 "the parked login",
-                Box::new(|| Err(CliError::Upstream("dummy first".into()))),
+                Box::new(|| Err(CliError::Auth("dummy first".into()))),
             ),
             (
                 "the stored password",
@@ -663,42 +743,146 @@ mod tests {
                 }),
             ),
         ];
-        let err = run_logout(true, false, steps, || {
+        let err = run_logout(true, false, false, steps, || {
             pk_cli_browser::forget_profile_in(&root, config::BIN)
         })
         .unwrap_err();
         assert!(later_step_ran.get());
         assert!(!profile.exists(), "the profile step still ran");
-        assert_eq!(err.exit_code(), 5, "the first failure's exit code");
+        assert_eq!(err.exit_code(), 3, "the first failure's exit code");
         assert_eq!(
             err.to_string(),
-            "network/upstream error: logout is incomplete. Cleared: the session, the saved \
-             settings, the browser profile. Still there: the parked login: network/upstream \
-             error: dummy first; the stored password: keychain error: dummy second. Once that \
-             is fixed, run `sfi auth logout --forget` again to finish."
+            "logout is incomplete. Cleared: the session, the saved settings, the browser \
+             profile. Still there: the parked login: dummy first; the stored password: dummy \
+             second. Once that is fixed, run `sfi auth logout --forget` again to finish."
         );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// The same under a service override: the steps all run, the profile is
-    /// never touched, and the error says it was left.
+    /// A keychain failure first, as a real logout has it: exit 1, and the error
+    /// does not open with a kind that names only that failure. The same under a
+    /// service override: the profile is never touched, and the error says so.
     #[test]
     fn a_failed_step_under_a_service_override_still_leaves_the_profile() {
         let steps: Vec<LogoutStep<'_>> = vec![(
             "the session",
             Box::new(|| Err(CliError::Keychain("dummy".into()))),
         )];
-        let err = run_logout(false, true, steps, || -> Result<bool, BrowserError> {
-            panic!("the real profile must not be removed under a service override")
-        })
+        let err = run_logout(
+            false,
+            true,
+            false,
+            steps,
+            || -> Result<bool, BrowserError> {
+                panic!("the real profile must not be removed under a service override")
+            },
+        )
         .unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(
             err.to_string(),
-            "keychain error: logout is incomplete. Cleared: nothing. Still there: the session: \
-             keychain error: dummy. SFI_KEYCHAIN_SERVICE is set, so the real browser profile was left in \
-             place. Once that is fixed, run `sfi auth logout` again to finish."
+            "logout is incomplete. Cleared: nothing. Still there: the session: dummy. SFI_KEYCHAIN_SERVICE \
+             is set, so the real browser profile was left in place. Once that is fixed, run \
+             `sfi auth logout` again to finish."
         );
+    }
+
+    /// A store for the config at `path`, and a credential store that the tests
+    /// here only build: its steps are never run, so no keychain is reached.
+    fn logout_stores(path: &std::path::Path) -> (CredentialStore, ConfigStore) {
+        (
+            CredentialStore::new("piekstra.sfi-unused-in-tests"),
+            ConfigStore::new(config::BIN).with_override(Some(path.to_path_buf())),
+        )
+    }
+
+    fn step_names(steps: &[LogoutStep<'_>]) -> Vec<&'static str> {
+        steps.iter().map(|(what, _)| *what).collect()
+    }
+
+    /// Logout never parses the config, so a file that can't be parsed stops
+    /// nothing, and `--forget` clears it. The keychain steps are left out here,
+    /// and the profile step runs on a temp dir.
+    #[test]
+    fn logout_forget_clears_a_config_that_cannot_be_parsed() {
+        let (root, _) = profile_under_temp("corrupt-config");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let (creds, store) = logout_stores(&path);
+        assert!(store.load::<Config>().is_err(), "the file really is broken");
+
+        let plain = logout_steps(&creds, &store, false, false);
+        assert_eq!(step_names(&plain), ["the session", "the parked login"]);
+
+        let mut steps = logout_steps(&creds, &store, true, false);
+        assert_eq!(
+            step_names(&steps).last(),
+            Some(&"the saved settings"),
+            "the config step is the one to run"
+        );
+        let config_step = steps.pop().unwrap();
+        let line = run_logout(true, false, false, vec![config_step], || {
+            pk_cli_browser::forget_profile_in(&root, config::BIN)
+        })
+        .unwrap();
+        assert_eq!(line, "logged out and forgot the stored credentials");
+        store.load::<Config>().expect("the broken file is cleared");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// While the keychain service is overridden and no `--config` was named, the
+    /// real config is out of reach: `--forget` has no config step, and the line
+    /// says what was left.
+    #[test]
+    fn logout_forget_leaves_the_real_config_under_a_service_override() {
+        let (root, _) = profile_under_temp("override-config");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let (creds, store) = logout_stores(&path);
+        let steps = logout_steps(&creds, &store, true, true);
+        assert!(
+            !step_names(&steps).contains(&"the saved settings"),
+            "{:?}",
+            step_names(&steps)
+        );
+        let never = || -> Result<bool, BrowserError> {
+            panic!("the real profile must not be removed under a service override")
+        };
+        assert_eq!(
+            run_logout(true, true, true, Vec::new(), never).unwrap(),
+            "logged out and forgot the stored credentials; SFI_KEYCHAIN_SERVICE is set, so the real browser \
+             profile and config were left in place"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// What a sign-in learned is saved, unless the real config is out of reach,
+    /// and then the line says it was left.
+    #[test]
+    fn a_sign_in_leaves_the_real_config_under_a_service_override() {
+        let (root, _) = profile_under_temp("signed-in-config");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.json");
+        let (_, store) = logout_stores(&path);
+        let cfg = Config {
+            username: Some("user@example.com".into()),
+            account: Some("dummy-account".into()),
+        };
+
+        let left = save_signed_in_config(&store, &cfg, true).unwrap();
+        assert_eq!(
+            left.as_deref(),
+            Some("SFI_KEYCHAIN_SERVICE is set, so the real config was left as it is")
+        );
+        assert!(!path.exists(), "nothing was written");
+
+        assert_eq!(save_signed_in_config(&store, &cfg, false).unwrap(), None);
+        let saved: Config = store.load().unwrap();
+        assert_eq!(saved.account.as_deref(), Some("dummy-account"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// While the keychain service is overridden, the real profile is out of
@@ -709,11 +893,11 @@ mod tests {
             panic!("the real profile must not be removed under a service override")
         };
         assert_eq!(
-            run_logout(false, true, Vec::new(), never).unwrap(),
+            run_logout(false, true, false, Vec::new(), never).unwrap(),
             "logged out; SFI_KEYCHAIN_SERVICE is set, so the real browser profile was left in place"
         );
         assert_eq!(
-            run_logout(true, true, Vec::new(), never).unwrap(),
+            run_logout(true, true, false, Vec::new(), never).unwrap(),
             "logged out and forgot the stored credentials; SFI_KEYCHAIN_SERVICE is set, so the real browser \
              profile was left in place"
         );
@@ -729,7 +913,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&target, &profile).unwrap();
-        let err = run_logout(false, false, Vec::new(), || {
+        let err = run_logout(false, false, false, Vec::new(), || {
             pk_cli_browser::forget_profile_in(&root, config::BIN)
         })
         .unwrap_err();
