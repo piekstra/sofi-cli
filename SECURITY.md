@@ -25,6 +25,9 @@ things worth protecting, all stored in the OS keychain under service
 - **A parked mid-MFA login** (`pending`). Short-lived and single-use:
   deleted on the next `--code` attempt whether it succeeds or fails.
 
+SoFi's session cookies also sit in the browser profile a `--browser` sign-in
+keeps (below), outside the keychain.
+
 Additionally, **statement links returned by the portal may be pre-signed**
 and grant access to a bank statement or tax form without a session. Never
 paste one into an issue, a log, or a commit.
@@ -46,7 +49,10 @@ on macOS (`$XDG_DATA_HOME/piekstra.sfi/browser-profile`, or under
 the session:
 
 - **Cookies**, SoFi's session among them. Chrome encrypts these at rest, on macOS
-  with the "Chrome Safe Storage" key in the login keychain.
+  with the "Chrome Safe Storage" key in the login keychain and on Linux with the
+  desktop keyring. **On Linux with no desktop keyring it falls back to a fixed,
+  publicly known key**, so there the session cookie is effectively unencrypted and
+  `0700` is its only protection. Use `--fresh-profile` on such a machine.
 - **Browsing history with full URLs including query strings, the HTTP cache and
   site storage** (`localStorage`, IndexedDB). Chrome's cookie encryption does not
   cover these, and the directory's `0700` mode is their only protection. The
@@ -66,13 +72,17 @@ So:
   while it is in use or when it is a symlink or another user's (exit 1). The
   error says the session is already cleared and only the profile remains, names
   the path and says how to finish.
-- A sign-in that fails leaves it in place. A timeout or a closed window says so
-  and names `sfi auth logout`, which removes it and clears the stored session
-  too. `sfi auth status` does not report it: cli-common v0.16.0 has no call that
-  says whether a profile exists.
-- A `SOFI` cookie left in it from an earlier sign-in is not trusted alone: the
-  capture accepts a session only on a working validation read, or with
-  `--fresh-profile` on the cookie when that read is inconclusive.
+- A sign-in that fails for any reason leaves it in place, possibly signed in: a
+  timeout, a closed window, Ctrl-C, a validation read that ends the wait, a
+  keychain write that fails after the capture. The error says so and names `sfi
+  auth logout`, which removes it and clears the stored session too. A second
+  Ctrl-C force-quits with no message. `sfi auth status` does not report it:
+  cli-common v0.16.0 has no call that says whether a profile exists.
+- A `SOFI` cookie left in it from an earlier sign-in is not trusted alone. In the
+  kept profile only a working validation read accepts a session. The first 429,
+  5xx, 404 or transport failure on that read ends the wait, so sfi does not keep
+  calling an API that may be throttling it. Only `--fresh-profile`, whose profile
+  started empty, accepts on the cookie when that read is inconclusive.
 - `--fresh-profile` runs one sign-in in a scratch profile instead, created
   `0700`, exclusively, under an unpredictable name in the temp dir, and removed
   when the window closes. If it cannot be removed, `sfi` prints a warning naming
@@ -98,7 +108,9 @@ needs the user's approval, once, to read the `piekstra.sfi` keychain item.
 
 `SFI_KEYCHAIN_SERVICE` renames the keychain service read and written, for
 tests and for checking the error paths against an empty service. It carries
-no secret.
+no secret. It does not move the kept browser profile: while it is set, `sfi auth
+logout` clears the named service, leaves the real profile in place and says so,
+and `sfi auth login --browser` still runs in the real profile.
 
 ## What this tool does not do
 

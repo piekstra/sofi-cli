@@ -64,10 +64,21 @@ pub fn credential_store() -> CredentialStore {
 /// [`credential_store`]'s decision, given the variable's value, so a test
 /// can check it without setting the process environment every test shares.
 fn credential_store_for(service: Option<&str>) -> CredentialStore {
-    match service.map(str::trim) {
-        Some(s) if !s.is_empty() => CredentialStore::new(s),
-        _ => CredentialStore::for_binary(BIN),
+    match service_override(service) {
+        Some(s) => CredentialStore::new(s),
+        None => CredentialStore::for_binary(BIN),
     }
+}
+
+/// The service [`SERVICE_ENV`]'s value names, if any: a blank value names none.
+fn service_override(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Whether [`SERVICE_ENV`] points the keychain somewhere else. It does not move
+/// the kept browser profile, so `auth logout` leaves that alone while it does.
+pub fn service_overridden() -> bool {
+    service_override(std::env::var(SERVICE_ENV).ok().as_deref()).is_some()
 }
 
 /// On-disk, non-secret settings.
@@ -143,6 +154,16 @@ mod tests {
             credential_store_for(Some("piekstra.sfi-empty")).service(),
             "piekstra.sfi-empty"
         );
+    }
+
+    /// A blank value is no override: the real service is in use, as
+    /// `credential_store_for` decides.
+    #[test]
+    fn a_blank_variable_is_no_override() {
+        assert_eq!(service_override(None), None);
+        assert_eq!(service_override(Some("")), None);
+        assert_eq!(service_override(Some("  ")), None);
+        assert_eq!(service_override(Some(" dummy ")), Some("dummy"));
     }
 
     /// Secrets have fixed keychain accounts under `piekstra.sfi`; the config

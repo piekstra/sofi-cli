@@ -45,8 +45,12 @@ pub fn login(
     // password-POST endpoint is dead-live (docs/api.md §2), so this is the path
     // that actually works.
     if input.browser.browser {
-        let session = crate::browser::capture_session(input.browser.fresh_profile, common.quiet)?;
-        return finish_browser(common, store, &mut cfg, &creds, session);
+        let fresh_profile = input.browser.fresh_profile;
+        let note = crate::browser::kept_profile_note(fresh_profile, config::service_overridden());
+        return crate::browser::noting_kept_profile(note, || {
+            let session = crate::browser::capture_session(fresh_profile, common.quiet)?;
+            finish_browser(common, store, &mut cfg, &creds, session)
+        });
     }
 
     let sofi = Sofi::new()?;
@@ -287,7 +291,9 @@ pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<
 
     // Last, so a refusal (its window still open) leaves the rest done, and its
     // error says so.
-    let line = logout_browser(forget, || pk_cli_browser::forget_profile(config::BIN))?;
+    let line = logout_browser(forget, config::service_overridden(), || {
+        pk_cli_browser::forget_profile(config::BIN)
+    })?;
     if !common.quiet {
         eprintln!("{line}");
     }
@@ -303,10 +309,26 @@ pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<
 /// temp dir, so a test never removes the owner's real profile. Returns the
 /// status line. A refusal comes last, so its error (exit 1) says what is already
 /// cleared and how to finish.
+///
+/// [`config::SERVICE_ENV`] moves the keychain but not the profile, so while it
+/// is set (`service_overridden`) the keychain cleared here is not the real one.
+/// The real profile is left alone, and the line says so.
 fn logout_browser(
     forgot_credentials: bool,
+    service_overridden: bool,
     forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
 ) -> Result<String, CliError> {
+    if service_overridden {
+        return Ok(format!(
+            "logged out{}; {} is set, so the real browser profile was left in place",
+            if forgot_credentials {
+                " and forgot the stored credentials"
+            } else {
+                ""
+            },
+            config::SERVICE_ENV
+        ));
+    }
     let removed = forget_profile().map_err(|e| {
         CliError::Other(format!(
             "the session is already cleared{}; only the browser profile remains: {e}. \
@@ -500,7 +522,7 @@ mod tests {
         std::fs::create_dir_all(profile.join("Default")).unwrap();
         let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
         assert_eq!(
-            logout_browser(false, forget).unwrap(),
+            logout_browser(false, false, forget).unwrap(),
             "logged out; browser profile removed"
         );
         assert!(!profile.exists());
@@ -513,9 +535,9 @@ mod tests {
     fn logout_with_no_kept_profile_still_logs_out() {
         let (root, _) = profile_under_temp("none");
         let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
-        assert_eq!(logout_browser(false, forget).unwrap(), "logged out");
+        assert_eq!(logout_browser(false, false, forget).unwrap(), "logged out");
         assert_eq!(
-            logout_browser(true, forget).unwrap(),
+            logout_browser(true, false, forget).unwrap(),
             "logged out and forgot the stored credentials"
         );
     }
@@ -526,7 +548,7 @@ mod tests {
         std::fs::create_dir_all(&profile).unwrap();
         let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
         assert_eq!(
-            logout_browser(true, forget).unwrap(),
+            logout_browser(true, false, forget).unwrap(),
             "logged out and forgot the stored credentials; browser profile removed"
         );
         std::fs::remove_dir_all(&root).unwrap();
@@ -542,7 +564,7 @@ mod tests {
                 "a Chrome (pid 7) is still running in dummy-profile".into(),
             ))
         };
-        let err = logout_browser(false, in_use).unwrap_err();
+        let err = logout_browser(false, false, in_use).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(
             err.to_string(),
@@ -550,7 +572,7 @@ mod tests {
              7) is still running in dummy-profile. Once that is fixed, run `sfi auth logout` \
              again to finish."
         );
-        let err = logout_browser(true, in_use).unwrap_err();
+        let err = logout_browser(true, false, in_use).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert!(
             err.to_string().starts_with(
@@ -558,6 +580,24 @@ mod tests {
                  browser profile remains: "
             ),
             "{err}"
+        );
+    }
+
+    /// While the keychain service is overridden, the real profile is out of
+    /// reach: the removal is never called, and the line says it was left.
+    #[test]
+    fn logout_leaves_the_real_profile_under_a_service_override() {
+        let never = || -> Result<bool, BrowserError> {
+            panic!("the real profile must not be removed under a service override")
+        };
+        assert_eq!(
+            logout_browser(false, true, never).unwrap(),
+            "logged out; SFI_KEYCHAIN_SERVICE is set, so the real browser profile was left in place"
+        );
+        assert_eq!(
+            logout_browser(true, true, never).unwrap(),
+            "logged out and forgot the stored credentials; SFI_KEYCHAIN_SERVICE is set, so the real browser \
+             profile was left in place"
         );
     }
 
@@ -571,7 +611,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&target, &profile).unwrap();
-        let err = logout_browser(false, || {
+        let err = logout_browser(false, false, || {
             pk_cli_browser::forget_profile_in(&root, config::BIN)
         })
         .unwrap_err();
