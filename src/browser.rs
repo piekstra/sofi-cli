@@ -138,22 +138,29 @@ fn runs_in_kept_profile(fresh_profile: bool) -> bool {
     !fresh_profile && cfg!(unix)
 }
 
+/// Which profile a sign-in runs in: whether it is a scratch one, and the line to
+/// print when the override, not the owner's flag, made it so. A service named by
+/// [`SERVICE_ENV`] is a test namespace, so a sign-in under it must not read or
+/// change the real kept profile, as `auth logout` must not remove it.
+pub fn scratch_profile_choice(
+    fresh_profile_flag: bool,
+    service_overridden: bool,
+) -> (bool, Option<String>) {
+    let line = (service_overridden && !fresh_profile_flag).then(|| {
+        format!(
+            "{SERVICE_ENV} is set, so this sign-in uses a scratch browser profile, as with \
+             --fresh-profile"
+        )
+    });
+    (fresh_profile_flag || service_overridden, line)
+}
+
 /// The note a sign-in's failure carries: unless it ran in a scratch profile, the
 /// kept profile stays on disk, possibly signed in, so the owner is told and told
-/// how to remove it. `None` for `--fresh-profile`, and where the crate keeps no
-/// profile. `auth logout` leaves the profile alone while the keychain service is
-/// overridden, so the note says that instead.
-pub fn kept_profile_note(fresh_profile: bool, service_overridden: bool) -> Option<String> {
-    if !runs_in_kept_profile(fresh_profile) {
-        return None;
-    }
-    Some(if service_overridden {
-        format!(
-            "The kept browser profile stays on disk; `{} auth logout` leaves it while {SERVICE_ENV} \
-             is set.",
-            config::BIN
-        )
-    } else {
+/// how to remove it. `None` for a scratch profile, and where the crate keeps no
+/// profile.
+pub fn kept_profile_note(fresh_profile: bool) -> Option<String> {
+    runs_in_kept_profile(fresh_profile).then(|| {
         format!(
             "The kept browser profile stays on disk; `{} auth logout` removes it, and clears the \
              stored session too.",
@@ -1002,7 +1009,7 @@ mod tests {
     /// its exit code, the ones most likely to leave a live session included.
     #[test]
     fn every_failed_sign_in_says_the_kept_profile_stays() {
-        let note = kept_profile_note(false, false);
+        let note = kept_profile_note(false);
         let cases: Vec<(CliError, i32, &str)> = vec![
             (
                 BrowserError::TimedOut("timed out.".into()).into(),
@@ -1041,24 +1048,32 @@ mod tests {
     /// A scratch profile is gone by then, so `--fresh-profile` adds nothing.
     #[test]
     fn a_fresh_profile_sign_in_carries_no_note() {
-        assert_eq!(kept_profile_note(true, false), None);
-        let err = noting_kept_profile::<()>(kept_profile_note(true, false), || {
+        assert_eq!(kept_profile_note(true), None);
+        let err = noting_kept_profile::<()>(kept_profile_note(true), || {
             Err(BrowserError::TimedOut("timed out.".into()).into())
         })
         .unwrap_err();
         assert_eq!(err.to_string(), "timed out.");
     }
 
-    /// `auth logout` leaves the profile while the service is overridden, so the
-    /// note must not promise it removes it.
+    /// A service override is a test namespace: the sign-in takes a scratch
+    /// profile, as `--fresh-profile` does, and says so once. No browser runs here.
     #[test]
-    fn the_note_does_not_promise_a_removal_under_a_service_override() {
-        let note = kept_profile_note(false, true).unwrap();
-        assert!(
-            note.contains("leaves it while SFI_KEYCHAIN_SERVICE is set"),
-            "{note}"
+    fn a_service_override_makes_the_sign_in_use_a_scratch_profile() {
+        let line =
+            "SFI_KEYCHAIN_SERVICE is set, so this sign-in uses a scratch browser profile, as with \
+                    --fresh-profile";
+        assert_eq!(scratch_profile_choice(false, false), (false, None));
+        assert_eq!(scratch_profile_choice(true, false), (true, None));
+        assert_eq!(
+            scratch_profile_choice(false, true),
+            (true, Some(line.to_string()))
         );
-        assert!(!note.contains("removes"), "{note}");
+        // The owner asked for it already, so there is nothing to explain.
+        assert_eq!(scratch_profile_choice(true, true), (true, None));
+        // The note follows the choice, so a failure under an override has none.
+        let (fresh_profile, _) = scratch_profile_choice(false, true);
+        assert_eq!(kept_profile_note(fresh_profile), None);
     }
 
     /// A client that cannot be built ends the wait with its own error rather

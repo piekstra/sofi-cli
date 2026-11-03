@@ -108,9 +108,11 @@ needs the user's approval, once, to read the `piekstra.sfi` keychain item.
 
 `SFI_KEYCHAIN_SERVICE` renames the keychain service read and written, for
 tests and for checking the error paths against an empty service. It carries
-no secret. It does not move the kept browser profile: while it is set, `sfi auth
-logout` clears the named service, leaves the real profile in place and says so,
-and `sfi auth login --browser` still runs in the real profile.
+no secret. A service it names is a test namespace, and must not read or change
+the real kept browser profile. While it names one, `sfi auth logout` clears that
+service, leaves the real profile in place and says so, and `sfi auth login
+--browser` uses a scratch profile, as with `--fresh-profile`, and says so in one
+line on stderr. A blank value names no service.
 
 ## What this tool does not do
 

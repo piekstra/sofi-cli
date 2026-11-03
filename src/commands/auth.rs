@@ -45,8 +45,14 @@ pub fn login(
     // password-POST endpoint is dead-live (docs/api.md §2), so this is the path
     // that actually works.
     if input.browser.browser {
-        let fresh_profile = input.browser.fresh_profile;
-        let note = crate::browser::kept_profile_note(fresh_profile, config::service_overridden());
+        let (fresh_profile, line) = crate::browser::scratch_profile_choice(
+            input.browser.fresh_profile,
+            config::service_overridden(),
+        );
+        if let (Some(line), false) = (line, common.quiet) {
+            eprintln!("{line}");
+        }
+        let note = crate::browser::kept_profile_note(fresh_profile);
         return crate::browser::noting_kept_profile(note, || {
             let session = crate::browser::capture_session(fresh_profile, common.quiet)?;
             finish_browser(common, store, &mut cfg, &creds, session)

@@ -119,8 +119,10 @@ DevTools protocol and stores them in the keychain (`session`).
   the kept profile as its last step, through `logout_browser`, whose removal
   is a closure: the binary binds `forget_profile(BIN)`, tests bind
   `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real
-  profile. `SFI_KEYCHAIN_SERVICE` does not move the profile, so `auth logout`
-  skips the removal while it is set and says so. It is a full Chrome profile:
+  profile. A service `SFI_KEYCHAIN_SERVICE` names is a test namespace that must
+  not read or change the real profile: `auth logout` skips the removal and says
+  so, and `auth login --browser` takes a scratch profile and says so
+  (`scratch_profile_choice`). It is a full Chrome profile:
   history with full URLs, the HTTP cache and site storage sit outside Chrome's
   cookie encryption, and on Linux with no desktop keyring so does the session
   cookie (SECURITY.md). A failed sign-in leaves it, and every failure gets the

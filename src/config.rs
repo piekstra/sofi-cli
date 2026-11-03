@@ -76,7 +76,8 @@ fn service_override(value: Option<&str>) -> Option<&str> {
 }
 
 /// Whether [`SERVICE_ENV`] points the keychain somewhere else. It does not move
-/// the kept browser profile, so `auth logout` leaves that alone while it does.
+/// the kept browser profile, so `auth logout` and `auth login --browser` leave that
+/// alone while it does.
 pub fn service_overridden() -> bool {
     service_override(std::env::var(SERVICE_ENV).ok().as_deref()).is_some()
 }
