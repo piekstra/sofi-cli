@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.4 — 2026-11-03
+
+Built on cli-common v0.24.0.
+
+- `sfi api GET http://...` is refused with exit 2 before the keychain or the network.
+  It used to send the session cookie in the clear. Plain `http` to this machine still
+  works.
+- A redirect that leaves `https` is refused. A network error names the host and no
+  longer the whole URL.
+
 ## v0.3.3 — 2026-11-03
 
 Built on cli-common v0.20.0.

@@ -372,6 +372,19 @@ fn api_refuses_anything_but_get() {
 }
 
 #[test]
+fn api_refuses_a_plain_http_url_before_the_keychain() {
+    isolated("apihttp")
+        .args([
+            "api",
+            "GET",
+            "http://www.example.invalid/money/api/accounts",
+        ])
+        .assert()
+        .code(2)
+        .stderr(contains("only https is allowed"));
+}
+
+#[test]
 fn api_accepts_get_far_enough_to_need_credentials() {
     if !keychain_tests_enabled() {
         return;
