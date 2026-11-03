@@ -31,17 +31,34 @@ paste one into an issue, a log, or a commit.
 
 **The browser login (`--browser`) opens a short-lived Chrome debug port.**
 `sfi auth login --browser` launches Chrome with `--remote-debugging-port` and
-a throwaway profile, through cli-common's `pk-cli-browser`, to read the session
-cookies over the DevTools protocol. That debug port has **no authentication of
-its own** — anything that can reach `127.0.0.1:<port>` (or read the profile's
-`DevToolsActivePort`) could read the live `SOFI` cookie during the login
-window. The scratch profile is therefore created owner-only (`0700`),
-exclusively, under an unpredictable name. The `www.sofi.com` tab is closed as
-soon as the session is read, and Chrome plus the profile are torn down on every
-exit path, including Ctrl-C; a second Ctrl-C force-quits Chrome and removes the
-profile. If the profile cannot be removed, `sfi` prints a warning naming it,
-even with `-q`, because it may hold the session. The port exists only while you
-are signing in.
+the profile `sfi` keeps, through cli-common's `pk-cli-browser`, to read the
+session cookies over the DevTools protocol. That debug port has **no
+authentication of its own** — anything that can reach `127.0.0.1:<port>` (or
+read the profile's `DevToolsActivePort`) could read the live `SOFI` cookie
+during the login window. The `www.sofi.com` tab is closed as soon as the session
+is read, and Chrome is stopped on every exit path, including Ctrl-C; a second
+Ctrl-C force-quits it. The port exists only while you are signing in.
+
+**The browser profile stays on disk between sign-ins**, so SoFi remembers the
+device. It lives at `~/Library/Application Support/piekstra.sfi/browser-profile`
+on macOS (`$XDG_DATA_HOME/piekstra.sfi/browser-profile`, or under
+`~/.local/share`, on Linux) and holds SoFi's cookies, its session among them,
+and whatever the site keeps in `localStorage`. Chrome encrypts cookies at rest
+(on macOS with the "Chrome Safe Storage" key in the login keychain) but not
+`localStorage`, which only the directory's mode protects. So:
+
+- The profile is created `0700`, and a launch is refused when it is a symlink,
+  is not your user's or is not `0700`.
+- One sign-in uses it at a time. A second, or a launch while a Chrome still runs
+  in it, is refused (exit 1).
+- `sfi auth logout` removes it, after clearing the keychain items, and refuses
+  while it is in use or when it is a symlink or another user's (exit 1). The
+  message names the path and what to do.
+- `--fresh-profile` runs one sign-in in a scratch profile instead, created
+  `0700`, exclusively, under an unpredictable name in the temp dir, and removed
+  when the window closes. If it cannot be removed, `sfi` prints a warning naming
+  it, even with `-q`, because it may hold the session.
+- Windows has no kept profile: every sign-in there uses a scratch one.
 
 The capture only reads pages on `www.sofi.com`; the Auth0 login page, where
 the password and the code are typed, is never attached to. To learn the app's
@@ -98,4 +115,5 @@ $ op read 'op://Private/sofi/password' \
 ```
 
 `sfi auth logout --forget` removes the password, session, device id, and any
-parked login from the keychain.
+parked login from the keychain. Plain `sfi auth logout` removes the session and
+any parked login. Both also remove the kept browser profile.

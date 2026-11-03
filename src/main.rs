@@ -104,7 +104,8 @@ enum AuthCmd {
     Login(SofiLoginArgs),
     /// Report credential/session state (auth-status/v1).
     Status(StatusArgs),
-    /// Clear the cached session; --forget also removes stored credentials.
+    /// Clear the cached session and remove the kept browser profile; --forget
+    /// also removes stored credentials.
     Logout(LogoutArgs),
     /// Raw keychain write for rotation / headless setup.
     SetCredential(SetCredentialArgs),
@@ -113,15 +114,16 @@ enum AuthCmd {
 /// `auth login`. The **supported** path is `--browser`; the password/`--code`
 /// flow is retained but its endpoint is dead-live (docs/api.md §2).
 #[derive(clap::Args, Debug)]
+#[command(mut_arg("browser", |a| a.conflicts_with_all(["code", "username"])))]
 struct SofiLoginArgs {
     #[command(flatten)]
     base: LoginArgs,
 
-    /// Open a Chrome window to sign in (password + MFA) and harvest the
-    /// session. This is the supported way to log in: SoFi's Auth0 + Cloudflare
-    /// front door can't be cleared headlessly (see docs/api.md §2).
-    #[arg(long, conflicts_with_all = ["code", "username"])]
-    browser: bool,
+    /// `--browser` and `--fresh-profile`, the family's flags. `--browser` is
+    /// the supported way to log in: SoFi's Auth0 + Cloudflare front door can't
+    /// be cleared headlessly (see docs/api.md §2).
+    #[command(flatten)]
+    browser: pk_cli_browser::BrowserArgs,
 
     /// SoFi username (usually an email address). Remembered in the config.
     #[arg(long, value_name = "EMAIL")]
@@ -427,7 +429,7 @@ fn auth_cmd(cli: &Cli, cmd: &AuthCmd, store: &ConfigStore, cfg: Config) -> Resul
             cfg,
             &commands::auth::LoginInput {
                 base: &args.base,
-                browser: args.browser,
+                browser: &args.browser,
                 username: args.username.as_deref(),
                 code: args.code.as_deref(),
                 channel: args.channel,

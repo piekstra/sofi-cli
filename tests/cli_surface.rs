@@ -119,6 +119,22 @@ fn auth_login_help_documents_the_browser_flag() {
         .stdout(contains("--browser"));
 }
 
+/// `--fresh-profile` picks the profile a browser sign-in runs in, so alone it
+/// would do nothing: a usage error, before any keychain/network/browser work.
+#[test]
+fn fresh_profile_requires_the_browser_flag() {
+    sfi()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--fresh-profile"));
+    isolated("freshalone")
+        .args(["auth", "login", "--fresh-profile"])
+        .assert()
+        .code(2)
+        .stderr(contains("--browser"));
+}
+
 /// `--browser` harvests a whole session, so it can't be combined with the
 /// single-code resume or a username; the conflict is a usage error, caught
 /// before any keychain/network/browser work.

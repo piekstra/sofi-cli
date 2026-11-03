@@ -2,8 +2,8 @@
 //! (password and the texted code), and the session is read out of it with
 //! cli-common's `pk-cli-browser`. This module is SoFi's side of that: what to
 //! read, how a read is confirmed, and the GraphQL header recipe taken from the
-//! app's own request. Launching Chrome, the scratch profile, Ctrl-C and the
-//! teardown are the crate's.
+//! app's own request. Launching Chrome, the kept profile (or a scratch one with
+//! `--fresh-profile`), Ctrl-C and the teardown are the crate's.
 //!
 //! # Why a browser is the supported path
 //!
@@ -101,10 +101,14 @@ fn browser_capture(quiet: bool) -> Result<Capture, CliError> {
 
 /// Open the browser, wait for the owner to finish logging in, and return a
 /// validated [`Session`], with the app's GraphQL header recipe when a request
-/// was seen. `quiet` suppresses the progress lines on stderr.
-pub fn capture_session(quiet: bool) -> Result<Session, CliError> {
+/// was seen. `fresh_profile` runs this sign-in in a scratch profile instead of
+/// the one sfi keeps. `quiet` suppresses the progress lines on stderr.
+pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<Session, CliError> {
     let captured = pk_cli_browser::capture(
-        Launch::new(config::BIN).url(LOGIN_PAGE_URL).quiet(quiet),
+        Launch::new(config::BIN)
+            .url(LOGIN_PAGE_URL)
+            .fresh_profile(fresh_profile)
+            .quiet(quiet),
         &browser_capture(quiet)?,
         DEFAULT_TIMEOUT,
     )?;

@@ -14,6 +14,7 @@
 //!   can't fetch anything leaves nothing broken behind.
 
 use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, SetCredentialArgs};
+use pk_cli_browser::{BrowserArgs, BrowserError};
 use pk_cli_config::ConfigStore;
 use pk_cli_core::{CliError, CommonArgs};
 use pk_cli_secrets::{CredentialStore, Secret};
@@ -25,7 +26,7 @@ use crate::config::{self, Config};
 pub struct LoginInput<'a> {
     pub base: &'a LoginArgs,
     /// The supported path: harvest the session from a real browser sign-in.
-    pub browser: bool,
+    pub browser: &'a BrowserArgs,
     pub username: Option<&'a str>,
     pub code: Option<&'a str>,
     pub channel: Channel,
@@ -43,8 +44,8 @@ pub fn login(
     // Cloudflare + MFA, and harvest the session cookies over CDP. The modeled
     // password-POST endpoint is dead-live (docs/api.md §2), so this is the path
     // that actually works.
-    if input.browser {
-        let session = crate::browser::capture_session(common.quiet)?;
+    if input.browser.browser {
+        let session = crate::browser::capture_session(input.browser.fresh_profile, common.quiet)?;
         return finish_browser(common, store, &mut cfg, &creds, session);
     }
 
@@ -284,17 +285,38 @@ pub fn logout(common: &CommonArgs, store: &ConfigStore, forget: bool) -> Result<
         store.save(&Config::default())?;
     }
 
+    // Last, so a refusal (its window still open) leaves the rest done.
+    let line = logout_browser(forget, || pk_cli_browser::forget_profile(config::BIN))?;
     if !common.quiet {
-        eprintln!(
-            "logged out{}",
-            if forget {
-                " and forgot the stored credentials"
-            } else {
-                ""
-            }
-        );
+        eprintln!("{line}");
     }
     Ok(())
+}
+
+/// `auth logout`'s browser step. The profile a `--browser` sign-in keeps holds
+/// SoFi's own cookies (its remembered device and session), so a logout removes
+/// it too and the next sign-in starts signed out. The removal is passed in:
+/// the binary binds it to `forget_profile(BIN)`, the tests to
+/// `forget_profile_in` under a temp dir, so a test never removes the owner's
+/// real profile. Returns the status line.
+fn logout_browser(
+    forgot_credentials: bool,
+    forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
+) -> Result<String, CliError> {
+    let removed = forget_profile()?;
+    Ok(format!(
+        "logged out{}{}",
+        if forgot_credentials {
+            " and forgot the stored credentials"
+        } else {
+            ""
+        },
+        if removed {
+            "; browser profile removed"
+        } else {
+            ""
+        }
+    ))
 }
 
 pub fn set_credential(
@@ -441,5 +463,94 @@ mod tests {
             .then(|| many[0]["id"].as_str().map(str::to_string))
             .flatten();
         assert_eq!(picked, None, "must not guess between several accounts");
+    }
+
+    /// A temp dir standing in for the per-user data dir, and the profile
+    /// `forget_profile_in` looks for under it.
+    fn profile_under_temp(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("sfi-logout-{tag}-{}", std::process::id()));
+        // A leftover from an aborted run must not decide the test.
+        let _ = std::fs::remove_dir_all(&root);
+        let profile = root
+            .join(format!("piekstra.{}", config::BIN))
+            .join("browser-profile");
+        (root, profile)
+    }
+
+    /// The logout's browser step on a temp dir through `test-util`'s
+    /// `forget_profile_in`, so it never removes the owner's real profile.
+    #[test]
+    fn logout_removes_the_kept_browser_profile() {
+        let (root, profile) = profile_under_temp("removes");
+        std::fs::create_dir_all(profile.join("Default")).unwrap();
+        let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
+        assert_eq!(
+            logout_browser(false, forget).unwrap(),
+            "logged out; browser profile removed"
+        );
+        assert!(!profile.exists());
+        // Only the profile goes, not the directory it sits in.
+        assert!(profile.parent().unwrap().exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn logout_with_no_kept_profile_still_logs_out() {
+        let (root, _) = profile_under_temp("none");
+        let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
+        assert_eq!(logout_browser(false, forget).unwrap(), "logged out");
+        assert_eq!(
+            logout_browser(true, forget).unwrap(),
+            "logged out and forgot the stored credentials"
+        );
+    }
+
+    #[test]
+    fn logout_with_forget_says_both() {
+        let (root, profile) = profile_under_temp("forget");
+        std::fs::create_dir_all(&profile).unwrap();
+        let forget = || pk_cli_browser::forget_profile_in(&root, config::BIN);
+        assert_eq!(
+            logout_browser(true, forget).unwrap(),
+            "logged out and forgot the stored credentials; browser profile removed"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A profile in use refuses the logout's last step with the crate's
+    /// message, which says what to close, and exit 1.
+    #[test]
+    fn logout_reports_a_profile_in_use() {
+        let err = logout_browser(false, || {
+            Err(BrowserError::ProfileInUse(
+                "a Chrome (pid 7) is still running in dummy-profile".into(),
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(
+            err.to_string(),
+            "a Chrome (pid 7) is still running in dummy-profile"
+        );
+    }
+
+    /// A kept profile that is a symlink needs repair: the crate refuses it,
+    /// the logout says so, and neither the link nor its target goes.
+    #[cfg(unix)]
+    #[test]
+    fn logout_refuses_a_profile_that_needs_repair() {
+        let (root, profile) = profile_under_temp("repair");
+        let target = root.join("elsewhere");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &profile).unwrap();
+        let err = logout_browser(false, || {
+            pk_cli_browser::forget_profile_in(&root, config::BIN)
+        })
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert!(err.to_string().contains("refusing to remove it"), "{err}");
+        assert!(target.exists() && profile.symlink_metadata().is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

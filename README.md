@@ -57,12 +57,27 @@ A Chrome window opens at the SoFi login. **You** sign in there (password and
 the texted code). `sfi` waits up to 10 minutes for the app at `www.sofi.com`,
 reads the `sofi.com` session cookies over the Chrome DevTools Protocol,
 confirms them with one read, and stores them in the OS keychain. The tab
-closes as soon as the session is read; then Chrome quits and its throwaway
-profile is deleted. Ctrl-C cancels and cleans up. Nothing drives the page:
-you log in by hand, which is what keeps the anti-bot checks happy. The window
-and the capture come from cli-common's `pk-cli-browser`, shared across the CLI
-family. It needs Google Chrome (or set `SFI_CHROME` to a Chrome/Chromium/Edge
-binary).
+closes as soon as the session is read; then Chrome quits. Ctrl-C cancels and
+stops Chrome. Nothing drives the page: you log in by hand, which is what keeps
+the anti-bot checks happy. The window and the capture come from cli-common's
+`pk-cli-browser`, shared across the CLI family. It needs Google Chrome (or set
+`SFI_CHROME` to a Chrome/Chromium/Edge binary).
+
+**The profile is kept.** Chrome runs in a profile `sfi` keeps on disk, owner-only
+(`0700`), at `~/Library/Application Support/piekstra.sfi/browser-profile` on
+macOS and `$XDG_DATA_HOME/piekstra.sfi/browser-profile` (or under
+`~/.local/share`) on Linux. SoFi's own cookies stay there between sign-ins, so
+a later `--browser` asks for less, often nothing: the window opens, the app
+loads signed in, the session is read and the window closes. That is a trade: a
+profile on disk that holds SoFi's cookies, for far fewer sign-ins. On Windows
+every sign-in uses a scratch profile.
+
+- `sfi auth login --browser --fresh-profile` signs in through a scratch profile
+  deleted afterwards, and leaves the kept one alone. SoFi sees a new device, so
+  expect its full sign-in.
+- `sfi auth logout` removes the kept profile too, so the next sign-in starts
+  signed out. It refuses while a sign-in or a Chrome is using the profile (exit
+  1, after clearing the keychain session): close that window and log out again.
 
 Login and the balance / interest / statement-list reads are **verified live**
 (2026-08-24). While you are signed in, `sfi` also watches the app's pages for
