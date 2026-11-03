@@ -118,12 +118,21 @@ enum AuthCmd {
 /// `auth login`. The **supported** path is `--browser`; the password/`--code`
 /// flow is retained but its endpoint is dead-live (docs/api.md §2).
 ///
-/// `--browser` captures the session, so it takes no other credential source:
-/// clap refuses it beside these flags (exit 2) before anything reads the keychain
-/// or the network or opens Chrome (cli-common DESIGN.md §2.2).
+/// `--browser` captures the session and reads only `--fresh-profile`, so clap
+/// refuses it beside every other login flag (exit 2) rather than ignore the flag,
+/// before anything reads the keychain or the network or opens Chrome.
 #[derive(clap::Args, Debug)]
 #[command(mut_arg("browser", |a| {
-    a.conflicts_with_all(["code", "username", "stdin", "from_env"])
+    a.conflicts_with_all([
+        "code",
+        "username",
+        "stdin",
+        "from_env",
+        "no_verify",
+        "overwrite",
+        "non_interactive",
+        "channel",
+    ])
 }))]
 struct SofiLoginArgs {
     #[command(flatten)]
@@ -148,7 +157,7 @@ struct SofiLoginArgs {
     code: Option<String>,
 
     /// Where to ask SoFi to send the verification code, when the provider
-    /// offers a choice (unused by `--browser`).
+    /// offers a choice. Not with `--browser`.
     #[arg(long, value_enum, default_value = "sms")]
     channel: client::Channel,
 }
@@ -475,6 +484,57 @@ fn config_op(cmd: &ConfigCmd) -> commands::misc::ConfigOp<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A login flag the browser branch does not read is refused beside `--browser`,
+    /// so a new flag can't be silently ignored: it conflicts, or it joins this list
+    /// because the branch reads it.
+    #[test]
+    fn every_login_flag_the_browser_branch_does_not_read_is_refused() {
+        let mut cli = Cli::command();
+        let auth = cli.find_subcommand_mut("auth").unwrap();
+        let login = auth.find_subcommand_mut("login").unwrap();
+        let browser = login
+            .get_arguments()
+            .find(|a| a.get_id() == "browser")
+            .unwrap();
+        let refused: Vec<&str> = login
+            .get_arg_conflicts_with(browser)
+            .iter()
+            .map(|a| a.get_id().as_str())
+            .collect();
+        let read_by_the_browser_branch = ["browser", "fresh_profile", "help"];
+        for arg in login.get_arguments() {
+            let id = arg.get_id().as_str();
+            if arg.is_global_set() || read_by_the_browser_branch.contains(&id) {
+                continue;
+            }
+            assert!(refused.contains(&id), "--browser must conflict with {id}");
+        }
+    }
+
+    /// Bare `--browser` still parses, though `--channel` has a default, and the
+    /// password login keeps every flag. Parsed only: nothing here runs a login.
+    #[test]
+    fn the_flags_refused_beside_browser_still_parse_without_it() {
+        let parse = |extra: &[&str]| {
+            let argv = [&["sfi", "auth", "login"][..], extra].concat();
+            Cli::command().try_get_matches_from(argv)
+        };
+        assert!(parse(&["--browser"]).is_ok());
+        assert!(parse(&["--browser", "--fresh-profile"]).is_ok());
+        for flags in [
+            ["--stdin"].as_slice(),
+            ["--from-env", "SFI_TEST_UNSET"].as_slice(),
+            ["--code", "000000"].as_slice(),
+            ["--username", "user@example.com"].as_slice(),
+            ["--no-verify"].as_slice(),
+            ["--overwrite"].as_slice(),
+            ["--non-interactive"].as_slice(),
+            ["--channel", "sms"].as_slice(),
+        ] {
+            assert!(parse(flags).is_ok(), "{flags:?}");
+        }
+    }
 
     /// clap's own debug assertions catch conflicting shorts (e.g. a
     /// subcommand `-a` shadowing the global `--account`) only when the command

@@ -148,6 +148,10 @@ fn fresh_profile_without_browser_is_refused_beside_every_login_flag() {
         ["--username", "user@example.com"].as_slice(),
         ["--stdin"].as_slice(),
         ["--from-env", "SFI_TEST_UNSET"].as_slice(),
+        ["--no-verify"].as_slice(),
+        ["--overwrite"].as_slice(),
+        ["--non-interactive"].as_slice(),
+        ["--channel", "sms"].as_slice(),
     ] {
         sfi()
             .env("HOME", &home)
@@ -209,8 +213,8 @@ fn logout_forget_runs_with_a_config_that_cannot_be_parsed() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// `--browser` harvests a whole session, so it takes no other credential source;
-/// the conflict is a usage error that names the flag, caught before any
+/// `--browser` harvests a whole session and reads only `--fresh-profile`, so every
+/// other login flag is refused rather than ignored; the conflict is a usage error that names the flag, caught before any
 /// keychain/network/browser work. Should one ever parse, the empty service and
 /// temp `HOME` keep the command off the real keychain items and the real profile,
 /// and `SFI_CHROME` pointing at nothing fails it rather than opening a window.
@@ -234,6 +238,10 @@ fn browser_refuses_another_credential_source_before_anything_runs() {
             ["--username", "user@example.com"].as_slice(),
             "'--username <EMAIL>'",
         ),
+        (["--no-verify"].as_slice(), "'--no-verify'"),
+        (["--overwrite"].as_slice(), "'--overwrite'"),
+        (["--non-interactive"].as_slice(), "'--non-interactive'"),
+        (["--channel", "sms"].as_slice(), "'--channel <CHANNEL>'"),
     ] {
         sfi()
             .env("HOME", &home)

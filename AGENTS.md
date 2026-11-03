@@ -103,6 +103,10 @@ DevTools protocol and stores them in the keychain (`session`).
 
 - **Owner-present only, and a live login costs an SMS code.** Never run
   `auth login --browser` from automation; it needs a human at the keyboard.
+- **A login flag the browser branch does not read conflicts with `--browser`**,
+  so it is refused (exit 2), not ignored. The test
+  `every_login_flag_the_browser_branch_does_not_read_is_refused` holds a new flag
+  to this.
 - **The mechanism is cli-common's `pk-cli-browser`; `src/browser.rs` is only
   SoFi's side of it.** The crate owns finding and launching Chrome
   (`SFI_CHROME`), the kept `0700` profile, Ctrl-C, closing the tab and the

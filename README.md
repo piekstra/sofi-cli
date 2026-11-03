@@ -53,17 +53,17 @@ there is no scriptable login endpoint (the plausible one returns 404 live), so
 $ sfi auth login --browser
 ```
 
-A Chrome window opens at the SoFi login. **You** sign in there (password and
-the texted code). `sfi` waits up to 10 minutes for the app at `www.sofi.com`,
-reads the `sofi.com` session cookies over the Chrome DevTools Protocol,
-confirms them with one read, and stores them in the OS keychain. The tab
-closes as soon as the session is read; then Chrome quits. Ctrl-C cancels and
-stops Chrome. Nothing drives the page: you log in by hand, which is what keeps
-the anti-bot checks happy. The window and the capture come from cli-common's
-`pk-cli-browser`, shared across the CLI family. It needs Google Chrome (or set
-`SFI_CHROME` to a Chrome/Chromium/Edge binary). `--browser` takes no other
-credential source: beside `--stdin`, `--from-env`, `--code` or `--username` it is
-a usage error (exit 2).
+A Chrome window opens at the SoFi login. **You** sign in there (password and the
+texted code). `sfi` waits up to 10 minutes for the app at `www.sofi.com`, reads
+the `sofi.com` session cookies over the Chrome DevTools Protocol, confirms them
+with one read, and stores them in the OS keychain. The tab closes as soon as the
+session is read; then Chrome quits. Ctrl-C cancels and stops Chrome. Nothing
+drives the page: you log in by hand, which is what keeps the anti-bot checks
+happy. The window and the capture come from cli-common's `pk-cli-browser`,
+shared across the CLI family. It needs Google Chrome (or set `SFI_CHROME` to a
+Chrome/Chromium/Edge binary). `--browser` takes no other login flag but
+`--fresh-profile`: beside any other it is a usage error (exit 2) that names the
+flag.
 
 **The profile is kept.** Chrome runs in a profile `sfi` keeps on disk, owner-only
 (`0700`), at `~/Library/Application Support/piekstra.sfi/browser-profile` on
