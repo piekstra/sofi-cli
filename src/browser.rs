@@ -1518,10 +1518,10 @@ mod tests {
             server.join().expect("the loopback server ran");
             state
         };
-        let accounts = include_str!("../tests/fixtures/accounts.json");
+        let working = include_str!("../tests/fixtures/accounts.json");
         let json = "application/json";
         for (status, content_type, body, expected) in [
-            ("200 OK", json, accounts, StoredSession::Working),
+            ("200 OK", json, working, StoredSession::Working),
             ("401 Unauthorized", json, "", StoredSession::Dead),
             (
                 "200 OK",
@@ -1542,11 +1542,7 @@ mod tests {
             ("200 OK", json, "", StoredSession::CantTell),
             ("404 Not Found", json, "", StoredSession::CantTell),
         ] {
-            assert_eq!(
-                state(status, content_type, body),
-                expected,
-                "{status} {body:?}"
-            );
+            assert_eq!(state(status, content_type, body), expected, "{status}");
         }
 
         let no_read = || -> Result<Sofi, CliError> { panic!("nothing to read") };
