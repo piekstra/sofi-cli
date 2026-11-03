@@ -16,14 +16,17 @@ keeps, where it used to run in a scratch profile deleted after every sign-in.
   with the crate's message while a sign-in or a Chrome is using the profile, or
   when the path is a symlink or another user's; the keychain items are cleared
   by then, and the error and `auth logout --help` say so.
+- `sfi auth logout` attempts every step even when one fails, and says what was
+  cleared and what remains, with the first failure's exit code.
 - While `SFI_KEYCHAIN_SERVICE` names a service, `sfi auth logout` leaves the real
   profile in place and `sfi auth login --browser` uses a scratch profile, and each
   says so.
 - Every `--browser` failure in the kept profile says the profile stays and that
   `sfi auth logout` removes it.
 - In the kept profile, an inconclusive validation read no longer accepts the
-  `SOFI` cookie, which may be left from an earlier sign-in. The first 429, 5xx,
-  404 or transport failure ends the sign-in (exit 5) and says to retry or use
+  `SOFI` cookie, which may be left from an earlier sign-in, and a 200 with no data
+  no longer verifies a session. The first 429, 5xx, 404, transport failure or empty
+  answer ends the sign-in (exit 5) and says to retry or use
   `--fresh-profile`, which keeps the old behaviour.
 - SECURITY.md and the README state what the kept profile holds: it is a full
   Chrome profile, with history, HTTP cache and site storage outside Chrome's

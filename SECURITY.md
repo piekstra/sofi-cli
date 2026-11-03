@@ -68,10 +68,11 @@ So:
   is not your user's or is not `0700`.
 - One sign-in uses it at a time. A second, or a launch while a Chrome still runs
   in it, is refused (exit 1).
-- `sfi auth logout` removes it, after clearing the keychain items, and refuses
-  while it is in use or when it is a symlink or another user's (exit 1). The
-  error says the session is already cleared and only the profile remains, names
-  the path and says how to finish.
+- `sfi auth logout` removes it, and refuses while it is in use or when it is a
+  symlink or another user's. Every step of a logout is attempted, so a refusal or
+  a failed keychain or config step leaves the rest done. The error says what was
+  cleared and what remains, names the path and says how to finish, with the first
+  failure's exit code.
 - A sign-in that fails for any reason leaves it in place, possibly signed in: a
   timeout, a closed window, Ctrl-C, a validation read that ends the wait, a
   keychain write that fails after the capture. The error says so and names `sfi
@@ -79,9 +80,10 @@ So:
   Ctrl-C force-quits with no message. `sfi auth status` does not report it:
   cli-common v0.16.0 has no call that says whether a profile exists.
 - A `SOFI` cookie left in it from an earlier sign-in is not trusted alone. In the
-  kept profile only a working validation read accepts a session. The first 429,
-  5xx, 404 or transport failure on that read ends the wait, so sfi does not keep
-  calling an API that may be throttling it. Only `--fresh-profile`, whose profile
+  kept profile only a working validation read accepts a session, and a 200 with
+  no data is not one, so an unverified session cannot replace a working one. The
+  first 429, 5xx, 404, transport failure or empty answer on that read ends the
+  wait, so sfi does not keep calling an API that may be throttling it. Only `--fresh-profile`, whose profile
   started empty, accepts on the cookie when that read is inconclusive.
 - `--fresh-profile` runs one sign-in in a scratch profile instead, created
   `0700`, exclusively, under an unpredictable name in the temp dir, and removed

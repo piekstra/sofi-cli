@@ -84,9 +84,10 @@ the session cookie too: use `--fresh-profile` there. See
   deleted afterwards, and leaves the kept one alone. SoFi sees a new device, so
   expect its full sign-in.
 - `sfi auth logout` removes the kept profile too, so the next sign-in starts
-  signed out. It refuses while a sign-in or a Chrome is using the profile (exit
-  1): the keychain session is already cleared and only the profile remains, so
-  close that window and log out again.
+  signed out. Every step is attempted: if one fails, or a sign-in or a Chrome is
+  using the profile, the rest is still cleared, and the error says what was
+  cleared and what remains, with the first failure's exit code. Fix that and log
+  out again.
 - A sign-in that fails for any reason, Ctrl-C included, leaves the kept profile
   in place, possibly signed in, and its error says so. `sfi auth logout` removes
   it, and clears the stored session too. `sfi auth status` does not report the

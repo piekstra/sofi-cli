@@ -149,11 +149,11 @@ with a mild read — by default the accounts collection (§3.2), but that endpoi
 itself UNVERIFIED-LIVE, so the path is overridable with `SFI_VALIDATE_PATH`.
 The classification (`browser::probe_outcome`, pure/tested):
 
-- a real JSON read → **accept**;
+- a JSON read holding data (a non-empty object or array) → **accept**;
 - HTML / a login redirect / 401 → **keep waiting** (not signed in yet; the tab
   stays open and the read is retried on the next poll);
-- **404** (the default endpoint doesn't exist) or another transient error, in a
-  **scratch profile** (`--fresh-profile`) → **accept on the `SOFI` bearer
+- **404** (the default endpoint doesn't exist), another transient error, or a
+  200 with no data (empty, `null`, `{}`, `[]`), in a **scratch profile** (`--fresh-profile`) → **accept on the `SOFI` bearer
   cookie**, with a note, so an unverified validation endpoint can't block a
   genuine login. That profile started empty, so the cookie is this sign-in's.
   After sign-in, live-probe the real read (`sfi api GET <path>`) and, if useful,

@@ -116,7 +116,7 @@ DevTools protocol and stores them in the keychain (`session`).
   on Linux), so SoFi's remembered device and its session carry over and a
   later `--browser` often needs no input. `--fresh-profile` runs one sign-in
   in a scratch profile and leaves the kept one alone. `auth logout` removes
-  the kept profile as its last step, through `logout_browser`, whose removal
+  the kept profile as its last step, through `run_logout`, whose removal
   is a closure: the binary binds `forget_profile(BIN)`, tests bind
   `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real
   profile. A service `SFI_KEYCHAIN_SERVICE` names is a test namespace that must
@@ -126,8 +126,8 @@ DevTools protocol and stores them in the keychain (`session`).
   history with full URLs, the HTTP cache and site storage sit outside Chrome's
   cookie encryption, and on Linux with no desktop keyring so does the session
   cookie (SECURITY.md). A failed sign-in leaves it, and every failure gets the
-  note because the whole sign-in runs inside `noting_kept_profile`. A refused logout's error says the session is already
-  cleared. `auth status` does not report the profile: cli-common v0.16.0 has no
+  note because the whole sign-in runs inside `noting_kept_profile`. Every logout step is attempted, and a failed logout's error says
+  what was cleared and what remains. `auth status` does not report the profile: cli-common v0.16.0 has no
   call for it, and sfi must not work out the path itself.
 - The capture reads only `www.sofi.com` pages (never the Auth0 login host),
   gates on the `SOFI` bearer cookie, and reads the whole `sofi.com` jar (both
@@ -136,7 +136,8 @@ DevTools protocol and stores them in the keychain (`session`).
   it validates against a **swappable** read (`SFI_VALIDATE_PATH`, default the
   accounts collection). In a scratch profile a 404 there doesn't block the
   login, since the read endpoints are themselves unverified. In the kept profile
-  the first inconclusive read ends the wait (`Confirm::Fail`), because the `SOFI`
+  the first inconclusive read, a 200 with no data included, ends the wait
+  (`Confirm::Fail`), so nothing unverified can replace a working session, because the `SOFI`
   cookie may be left from an earlier sign-in and polling must not keep calling an
   API that may be throttling. The capture reads no `localStorage`; keep it that way, or
   a stale token bundle in the kept profile becomes readable on page load.

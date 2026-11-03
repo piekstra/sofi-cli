@@ -185,15 +185,21 @@ pub fn noting_kept_profile<T>(
 }
 
 fn with_note(err: CliError, note: &str) -> CliError {
-    let add = |message: String| format!("{}. {note}", message.trim_end_matches('.'));
+    rewording(err, |message| {
+        format!("{}. {note}", message.trim_end_matches('.'))
+    })
+}
+
+/// The same kind of error, so the same exit code, with its message rewritten.
+pub fn rewording(err: CliError, reword: impl FnOnce(String) -> String) -> CliError {
     match err {
-        CliError::Usage(m) => CliError::Usage(add(m)),
-        CliError::Auth(m) => CliError::Auth(add(m)),
-        CliError::NotFound(m) => CliError::NotFound(add(m)),
-        CliError::Upstream(m) => CliError::Upstream(add(m)),
-        CliError::ConfirmationRequired(m) => CliError::ConfirmationRequired(add(m)),
-        CliError::Keychain(m) => CliError::Keychain(add(m)),
-        CliError::Other(m) => CliError::Other(add(m)),
+        CliError::Usage(m) => CliError::Usage(reword(m)),
+        CliError::Auth(m) => CliError::Auth(reword(m)),
+        CliError::NotFound(m) => CliError::NotFound(reword(m)),
+        CliError::Upstream(m) => CliError::Upstream(reword(m)),
+        CliError::ConfirmationRequired(m) => CliError::ConfirmationRequired(reword(m)),
+        CliError::Keychain(m) => CliError::Keychain(reword(m)),
+        CliError::Other(m) => CliError::Other(reword(m)),
     }
 }
 
@@ -404,7 +410,12 @@ enum Probe {
 /// whose bearer cookie is present.
 fn probe_outcome(res: &Result<serde_json::Value, CliError>, path: &str) -> Probe {
     match res {
-        Ok(_) => Probe::Ready,
+        Ok(body) if holds_data(body) => Probe::Ready,
+        // A 200 with nothing in it (`parse_json` reads an empty body as null)
+        // proves nothing about the session.
+        Ok(_) => Probe::Unverifiable(format!(
+            "the validation read {path} answered 200 with no data"
+        )),
         // HTML-where-JSON-expected, a login redirect, or a 401/403 all map to
         // Auth: the owner hasn't finished signing in.
         Err(CliError::Auth(_)) => Probe::NotYet,
@@ -413,6 +424,15 @@ fn probe_outcome(res: &Result<serde_json::Value, CliError>, path: &str) -> Probe
              (set SFI_VALIDATE_PATH to a known read)"
         )),
         Err(e) => Probe::Unverifiable(format!("the validation read {path} was inconclusive ({e})")),
+    }
+}
+
+/// Whether an answer carries anything: a non-empty object or array.
+fn holds_data(body: &serde_json::Value) -> bool {
+    match body {
+        serde_json::Value::Object(fields) => !fields.is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        _ => false,
     }
 }
 
@@ -638,7 +658,7 @@ mod tests {
         let (answer, note) = confirm_for(Err(CliError::NotFound("404".into())));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert!(note.unwrap().contains("SFI_VALIDATE_PATH"));
-        let (answer, note) = confirm_for(Ok(json!({})));
+        let (answer, note) = confirm_for(Ok(json!({"accounts": []})));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert_eq!(note, None);
     }
@@ -954,10 +974,28 @@ mod tests {
             assert_kept_read_fails(answer, named);
             assert_eq!(note, None);
         }
-        let (answer, _) = kept(Ok(json!({})));
+        let (answer, _) = kept(Ok(json!({"accounts": []})));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         let (answer, _) = kept(Err(CliError::Auth("401".into())));
         assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+    }
+
+    /// A 200 with nothing in it is not a verified session. In a kept profile,
+    /// where the cookie may be stale, it must not reach the keychain and replace
+    /// a working session; in a scratch profile it is accepted with a note.
+    #[test]
+    fn a_two_hundred_with_no_data_does_not_verify_a_kept_session() {
+        for body in ["", "null", "{}", "[]", "true", "0", r#""dummy""#] {
+            let (base, server) = loopback("200 OK", "application/json", body);
+            let answer = confirm_with(&signed_in(), true, true, VALIDATION_PATH, || {
+                Sofi::with_base(&base)
+            });
+            server.join().expect("the loopback server ran");
+            assert_kept_read_fails(answer, "no data");
+
+            let (answer, _) = confirm_on_loopback(&signed_in(), "200 OK", "application/json", body);
+            assert!(matches!(answer, Confirm::Ready), "{body:?}: {answer:?}");
+        }
     }
 
     fn assert_kept_read_fails(answer: Confirm, named: &str) {

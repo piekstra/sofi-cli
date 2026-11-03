@@ -135,15 +135,22 @@ fn fresh_profile_requires_the_browser_flag() {
         .stderr(contains("--browser"));
 }
 
-/// A logout whose profile removal is refused has already cleared the rest, and
-/// its help says so before anyone runs into it.
+/// The summary `auth --help` lists stays one line; the detail of a logout that
+/// cannot finish is in `auth logout --help`.
 #[test]
-fn logout_help_says_a_refused_profile_leaves_the_rest_cleared() {
+fn logout_help_keeps_the_refusal_detail_out_of_the_summary() {
+    sfi()
+        .args(["auth", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--forget also"))
+        .stdout(contains("still cleared").not());
     sfi()
         .args(["auth", "logout", "--help"])
         .assert()
         .success()
-        .stdout(contains("the rest is still cleared and this exits 1"));
+        .stdout(contains("Every step is attempted"))
+        .stdout(contains("the rest is still cleared"));
 }
 
 /// `--browser` harvests a whole session, so it can't be combined with the
