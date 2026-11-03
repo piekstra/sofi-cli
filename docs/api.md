@@ -54,6 +54,11 @@ plausible JSON login endpoint this repo first modeled, returns HTTP 404 live
 
 ### 2.2 `sfi auth login --browser` — the supported path — **LIVE-VERIFIED 2026-08-24**
 
+`--browser` reads only `--fresh-profile`. Beside `--stdin`, `--from-env`,
+`--code`, `--username`, `--no-verify`, `--overwrite`, `--non-interactive` or
+`--channel` it is exit 2 from clap, before anything reads the keychain or the
+network or opens Chrome.
+
 Confirmed live: captured the session on the first try, the validation read
 answered ("2 accounts visible"). The mechanism is cli-common's
 `pk-cli-browser` (its DESIGN.md §2.2), the family's shared browser sign-in;

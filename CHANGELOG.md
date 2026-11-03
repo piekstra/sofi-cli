@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.2 — 2026-11-03
+
+`sfi auth login --browser` now refuses every login flag it does not read, with
+exit 2 and the flag named on stderr. Each of these used to parse and be ignored.
+A script that passes one beside `--browser` must drop it:
+
+- `--stdin` and `--from-env`: the password on stdin or in the variable was never
+  read.
+- `--no-verify`, `--overwrite`, `--non-interactive` and `--channel`: the sign-in
+  ran the same with or without them.
+
+`--fresh-profile` stays allowed. These flags still parse without `--browser`.
+
 ## v0.3.1 — 2026-11-03
 
 Moves to cli-common v0.19.0. The minimum Rust version is now 1.89.
