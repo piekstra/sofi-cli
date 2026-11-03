@@ -118,22 +118,32 @@ enum AuthCmd {
 /// `auth login`. The **supported** path is `--browser`; the password/`--code`
 /// flow is retained but its endpoint is dead-live (docs/api.md §2).
 ///
-/// `--browser` captures the session and reads only `--fresh-profile`, so clap
-/// refuses it beside every other login flag (exit 2) rather than ignore the flag,
-/// before anything reads the keychain or the network or opens Chrome.
+/// `--browser` captures the session and reads only `--fresh-profile` and
+/// `--overwrite`, so clap refuses it beside every other login flag (exit 2) rather
+/// than ignore the flag, before anything reads the keychain or the network or opens
+/// Chrome.
+///
+/// The shared `LoginArgs` brings `--no-verify`, which no login path here reads, so
+/// `--help` does not offer it. It still parses, so a script that passes it does not
+/// break. `--overwrite` only means something beside `--browser`.
 #[derive(clap::Args, Debug)]
-#[command(mut_arg("browser", |a| {
-    a.conflicts_with_all([
-        "code",
-        "username",
-        "stdin",
-        "from_env",
-        "no_verify",
-        "overwrite",
-        "non_interactive",
-        "channel",
-    ])
-}))]
+#[command(
+    mut_arg("browser", |a| {
+        a.conflicts_with_all([
+            "code",
+            "username",
+            "stdin",
+            "from_env",
+            "no_verify",
+            "non_interactive",
+            "channel",
+        ])
+    }),
+    mut_arg("no_verify", |a| a.hide(true)),
+    mut_arg("overwrite", |a| {
+        a.help("With --browser, let a session the read could not verify replace a stored one")
+    })
+)]
 struct SofiLoginArgs {
     #[command(flatten)]
     base: LoginArgs,
@@ -502,7 +512,7 @@ mod tests {
             .iter()
             .map(|a| a.get_id().as_str())
             .collect();
-        let read_by_the_browser_branch = ["browser", "fresh_profile", "help"];
+        let read_by_the_browser_branch = ["browser", "fresh_profile", "overwrite", "help"];
         for arg in login.get_arguments() {
             let id = arg.get_id().as_str();
             if arg.is_global_set() || read_by_the_browser_branch.contains(&id) {
@@ -522,6 +532,7 @@ mod tests {
         };
         assert!(parse(&["--browser"]).is_ok());
         assert!(parse(&["--browser", "--fresh-profile"]).is_ok());
+        assert!(parse(&["--browser", "--overwrite"]).is_ok());
         for flags in [
             ["--stdin"].as_slice(),
             ["--from-env", "SFI_TEST_UNSET"].as_slice(),

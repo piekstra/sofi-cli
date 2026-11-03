@@ -119,6 +119,25 @@ fn auth_login_help_documents_the_browser_flag() {
         .stdout(contains("--browser"));
 }
 
+/// No login path reads `--no-verify`, so `--help` does not offer it. It still
+/// parses: `the_flags_refused_beside_browser_still_parse_without_it`. `--overwrite`
+/// has an effect beside `--browser`, so it stays.
+#[test]
+fn login_help_hides_the_flag_with_no_effect() {
+    sfi()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--no-verify").not())
+        .stdout(contains("--overwrite"))
+        .stdout(contains("--stdin"));
+    sfi()
+        .args(["auth", "set-credential", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--overwrite"));
+}
+
 /// `--fresh-profile` picks the profile a browser sign-in runs in, so alone it
 /// would do nothing: a usage error, before any keychain/network/browser work.
 #[test]
@@ -213,7 +232,8 @@ fn logout_forget_runs_with_a_config_that_cannot_be_parsed() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// `--browser` harvests a whole session and reads only `--fresh-profile`, so every
+/// `--browser` harvests a whole session and reads only `--fresh-profile` and
+/// `--overwrite`, so every
 /// other login flag is refused rather than ignored; the conflict is a usage error that names the flag, caught before any
 /// keychain/network/browser work. Should one ever parse, the empty service and
 /// temp `HOME` keep the command off the real keychain items and the real profile,
@@ -239,7 +259,6 @@ fn browser_refuses_another_credential_source_before_anything_runs() {
             "'--username <EMAIL>'",
         ),
         (["--no-verify"].as_slice(), "'--no-verify'"),
-        (["--overwrite"].as_slice(), "'--overwrite'"),
         (["--non-interactive"].as_slice(), "'--non-interactive'"),
         (["--channel", "sms"].as_slice(), "'--channel <CHANNEL>'"),
     ] {

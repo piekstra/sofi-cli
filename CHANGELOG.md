@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.3.3 — 2026-11-03
+
+Built on cli-common v0.20.0.
+
+- A `sfi auth login --browser` that runs out of time before you finish signing in
+  now says what the validation read was told, where it used to say only "answered
+  as signed out". Still exit 3.
+- A read that can't decide no longer ends a kept-profile sign-in or, for an edge
+  block, reads as a dead session. That is a 429, a 5xx, a dropped connection, an
+  edge block's page (an HTML 403 or 429, or a page titled as a challenge), or a
+  2xx that is empty or not JSON. The window stays open, since the session cookie
+  does not survive the stop, and cli-common asks again after a backoff of 6 s,
+  doubling to 60 s, or longer if SoFi's `Retry-After` asks. Its first such answer
+  prints one status line, unless `-q`, saying Ctrl-C ends the wait. **A wait that
+  runs out on it is now exit 5, not exit 3**, because signing in again fixes
+  nothing. A 404 there still ends the sign-in at once, since no later poll can
+  change it.
+- A 2xx alone no longer accepts a session. The accounts read must show a non-empty
+  `accounts` list or `partyId`, and a parseable answer without one keeps the wait
+  going, in both profiles. A path `SFI_VALIDATE_PATH` names has no known shape, so
+  any non-empty object or array still counts there.
+- A `--fresh-profile` sign-in stored on a read that can't decide now warns even
+  under `-q`, naming the cause and `sfi auth login --browser --overwrite`. For an
+  edge block it says first that a new sign-in may not clear it, and to wait or try
+  another network. Without `--overwrite` it no longer replaces a stored session that
+  works (exit 2) or that a read could not check, a plain 403 included (exit 5). The
+  stored one stays and nothing is stored.
+- `sfi auth login --json` used to run and print nothing on stdout. It now prints
+  `auth-login/v1` on every path that stores a session, with `verified` always a
+  boolean: `true` when a read showed an account, `false` otherwise.
+- `--browser --overwrite` parses again, since v0.3.2 refused it, and now has the
+  effect above. `--overwrite` alone still does nothing.
+- Outside a sign-in, an HTML page on a 403 or 429, or a page titled as a challenge,
+  names itself as a possible bot check or edge block: a new sign-in may not clear it,
+  so wait or try another network. A bare HTML 5xx is an outage and offers no sign-in.
+  A 403 without an HTML page names both causes. An HTML 429 or 5xx used to read as a
+  lapsed session or a block at exit 3, and is now exit 5, as any other 429 or 5xx is.
+  The GraphQL BFF follows the same rule. Other exit codes are unchanged. The text
+  holds a status and a
+  URL without its query, never a cookie value or the page.
+- `sfi auth login --help` no longer offers `--no-verify`, which no login path
+  reads. It still parses without `--browser`, so a script that passes it does not
+  break.
+
 ## v0.3.2 — 2026-11-03
 
 `sfi auth login --browser` now refuses every login flag it does not read, with

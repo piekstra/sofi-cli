@@ -54,8 +54,8 @@ plausible JSON login endpoint this repo first modeled, returns HTTP 404 live
 
 ### 2.2 `sfi auth login --browser` — the supported path — **LIVE-VERIFIED 2026-08-24**
 
-`--browser` reads only `--fresh-profile`. Beside `--stdin`, `--from-env`,
-`--code`, `--username`, `--no-verify`, `--overwrite`, `--non-interactive` or
+`--browser` reads only `--fresh-profile` and `--overwrite`. Beside `--stdin`,
+`--from-env`, `--code`, `--username`, `--no-verify`, `--non-interactive` or
 `--channel` it is exit 2 from clap, before anything reads the keychain or the
 network or opens Chrome.
 
@@ -86,13 +86,21 @@ answered ("2 accounts visible"). The mechanism is cli-common's
    Only the header **names** and the name of the cookie the CSRF header is
    copied from are kept (`GraphqlRecipe`); with no request, the client uses
    the modeled header defaults and says so.
-5. Before the tab closes, the session is validated with a mild read (§2.5):
-   a signed-out answer keeps the tab open and asks again on the next poll.
+5. Before the tab closes, the session is validated with a mild read (§2.5).
    On success the tab closes, Chrome quits, and the session goes to the
-   keychain (`session`). A timeout after **10 minutes** (exit 3) says what was
-   missing: no `www.sofi.com` page, the `SOFI` cookie, or the validation read,
-   and, once the jar was read, its cookie names (never a value). Closing the
-   window is exit 3 too; Ctrl-C cancels (exit 1).
+   keychain (`session`). A refused answer keeps the tab open and asks again on
+   the next poll. A read that can't decide (§2.5) keeps the tab and the jar in
+   the kept profile, and the crate asks again after a backoff of 6 s, doubling
+   to 60 s, or longer if SoFi's `Retry-After` asks, up to five minutes. Its first
+   such answer prints one status line, unless `-q`, saying Ctrl-C ends the wait.
+   The wait lasts up to **10 minutes**. If it runs out with the read still unable
+   to decide, that is exit 5: signing in again fixes nothing, nothing is stored,
+   and the cookie is gone, so the sign-in may have to be repeated. If it runs out
+   before the owner finishes signing in, that is exit 3, and the error says what
+   was missing: no `www.sofi.com` page, the `SOFI` cookie, or what the validation
+   read was told, and, once the jar was read, its cookie names (never a value).
+   A reason holds a status and a URL without its query, never a cookie value or
+   the page. Closing the window is exit 3 too; Ctrl-C cancels (exit 1).
 
 **The kept profile.** Chrome runs in `<data dir>/piekstra.sfi/browser-profile`,
 which stays on disk, so SoFi's own cookies (its remembered device, the Auth0
@@ -158,20 +166,49 @@ with a mild read — by default the accounts collection (§3.2), but that endpoi
 itself UNVERIFIED-LIVE, so the path is overridable with `SFI_VALIDATE_PATH`.
 The classification (`browser::probe_outcome`, pure/tested):
 
-- a JSON read holding data (a non-empty object or array) → **accept**;
-- HTML / a login redirect / 401 → **keep waiting** (not signed in yet; the tab
-  stays open and the read is retried on the next poll);
-- **404** (the default endpoint doesn't exist), another transient error, or a
-  200 with no data (empty, `null`, `{}`, `[]`), in a **scratch profile** (`--fresh-profile`) → **accept on the `SOFI` bearer
-  cookie**, with a note, so an unverified validation endpoint can't block a
-  genuine login. That profile started empty, so the cookie is this sign-in's.
-  After sign-in, live-probe the real read (`sfi api GET <path>`) and, if useful,
-  set `SFI_VALIDATE_PATH`.
-- the same answer in the **kept profile** → **end the wait on the first one**
-  (exit 5): the cookie may be left from an earlier sign-in, so it proves nothing
-  without a working read, and polling every 3 s would keep calling an API that
-  may be throttling this client. The error names the answer and says to retry or
-  use `--fresh-profile`.
+- an answer showing an account → **accept**. On the accounts read that is the
+  value of a field: a non-empty `accounts` list, or a non-empty `partyId` for a
+  member with no account open. A path `SFI_VALIDATE_PATH` names has no known shape,
+  so any non-empty object or array counts there;
+- HTML that is not a challenge's / a login redirect / 401 / a 403 that is not an
+  HTML page / another 4xx / a parseable answer with no account → **keep waiting**,
+  in both profiles (`Confirm::NotYet`: not signed in yet, or a provider's refusal);
+- a **read that can't decide**: a 429, a 5xx, no answer, an edge block's page (an
+  HTML 403 or 429, or a page titled as a challenge), or a 2xx that is empty or
+  not JSON. A literal `null` reads as empty.
+  - In the **kept profile** → `Confirm::Undecided`, with the provider's
+    `Retry-After` when it sent one. The cookie may be left from an earlier sign-in,
+    so it proves nothing without a working read, and it does not survive the stop,
+    so ending the wait could lose a finished sign-in (cli-common DESIGN.md §2.2). A
+    wait that runs out here is exit 5.
+  - In a **scratch profile** (`--fresh-profile`) → **accept on the `SOFI` bearer
+    cookie**, unverified. That profile started empty, so the cookie is this
+    sign-in's.
+- a **404** (the default endpoint doesn't exist) → in a **scratch profile**, accept
+  on the cookie, unverified, so an unverified validation endpoint can't block a
+  genuine login. After sign-in, live-probe the real read (`sfi api GET <path>`) and,
+  if useful, set `SFI_VALIDATE_PATH`. In the **kept profile** → **end the wait**
+  (exit 5), since no later poll can change it. The error names it and says to fix
+  it, retry or use `--fresh-profile`.
+
+`sfi auth login --json` prints `auth-login/v1` (`pk_cli_auth::AuthLogin`) on stdout,
+on every path that stores a session, with `verified` always a boolean: `true` when a
+read showed an account, `false` otherwise. On the browser path only a scratch-profile
+acceptance gives `false`.
+
+A session accepted unverified exits 0 and warns on stderr even under `-q`, naming
+the cause and `sfi auth login --browser --overwrite`. When the cause is an edge block
+the warning says first that a new sign-in may not clear it, because the block is on
+the client rather than the session, and to wait or try another network. Without
+`--overwrite` one read of the stored session decides whether it may be replaced:
+
+| The stored session | What happens | Exit |
+|---|---|---|
+| None, or can't be parsed, has expired, or is refused (401, a login page, an answer with no account) | Replaced | 0 |
+| Shows an account | Kept, nothing stored | 2 |
+| Can't tell (a plain 403, an edge block, any read that can't decide, a 404) | Kept, nothing stored | 5 |
+
+A verified session always replaces what is stored.
 
 ### 2.6 The live 404 — recorded 2026-08-24
 
@@ -361,11 +398,11 @@ yet surfaced by a command — reachable via `sfi api GET
 
 | Situation | `CliError` | Exit |
 |---|---|---|
-| HTML where JSON expected (lapsed session / Cloudflare) | `Auth` | 3 |
+| HTML where JSON expected (lapsed session, or a possible bot check / edge block on a 403 or a page titled as a challenge) | `Auth` | 3 |
 | GraphQL `errors` with an auth/session message | `Auth` | 3 |
-| `401`/`403` | `Auth` | 3 |
+| `401`; a `403` without an HTML page, which names both causes | `Auth` | 3 |
 | `404` | `NotFound` | 4 |
-| `429` / other 5xx / GraphQL error | `Upstream` | 5 |
+| `429` / any 5xx, with or without an HTML page / GraphQL error | `Upstream` | 5 |
 | Download not a `%PDF` | `Upstream` (verify) | 5 |
 
 ## 5. Terms of service — an honest reading

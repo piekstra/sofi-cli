@@ -32,6 +32,7 @@ full citations). Where sources disagreed, the newest was preferred.
 | `customer.json` | `lijunle/bank-statement-downloader` `analyze/sofi.md` — `GET /banking-service/api/public/v2/customer` (documented; not wired into a command yet) |
 | `login_mfa_required.json` | modelled MFA-challenge body (docs/api.md §2) — **UNVERIFIED**, the login flow is the least certain part of the model |
 | `login_error.json` | modelled credential-rejection body (docs/api.md §2) — **UNVERIFIED** |
+| `login-page-with-challenge-words.html` | Hand-written, not modelled on any capture: a login page whose title is ordinary and whose meta tag, script and body hold a challenge's words. Only a `<title>` may name a bot check (`html_reads_as_edge_block`) |
 | `graphql_error.json` | GraphQL BFF error envelope — a 200 carrying an `errors` array, the auth-expiry shape (docs/api.md §3.4) |
 
 ## Value policy

@@ -13,12 +13,13 @@
 //!   after a real read succeeds with it, so a login that authenticates but
 //!   can't fetch anything leaves nothing broken behind.
 
-use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, SetCredentialArgs};
+use pk_cli_auth::{AuthLogin, AuthMethod, AuthStatus, LoginArgs, SetCredentialArgs};
 use pk_cli_browser::{BrowserArgs, BrowserError};
 use pk_cli_config::ConfigStore;
 use pk_cli_core::{CliError, CommonArgs};
 use pk_cli_secrets::{CredentialStore, Secret};
 
+use crate::browser::SignedIn;
 use crate::client::{Channel, LoginOutcome, Parked, Session, Sofi, ACCOUNTS_PATH};
 use crate::config::{self, Config};
 
@@ -55,9 +56,17 @@ pub fn login(
         }
         let note = crate::browser::kept_profile_note(fresh_profile);
         return crate::browser::noting_kept_profile(note, || {
-            let session = crate::browser::capture_session(fresh_profile, common.quiet)?;
-            finish_browser(common, store, &mut cfg, keep_config, &creds, session)
-                .map_err(BrowserError::Handler)
+            let signed_in = crate::browser::capture_session(fresh_profile, common.quiet)?;
+            finish_browser(
+                common,
+                store,
+                &mut cfg,
+                keep_config,
+                input.base.overwrite,
+                &creds,
+                signed_in,
+            )
+            .map_err(BrowserError::Handler)
         });
     }
 
@@ -195,14 +204,19 @@ fn finish(
             if accounts.len() == 1 { "" } else { "s" }
         );
     }
+    if common.json {
+        let verified = crate::browser::shows_an_account(&body, ACCOUNTS_PATH);
+        pk_cli_core::output::json(&AuthLogin::stored(verified).to_json());
+    }
     Ok(())
 }
 
 /// Persist a browser-harvested session.
 ///
-/// `capture_session` already validated it (best-effort — the validation
-/// endpoint is UNVERIFIED, so it may only confirm the bearer cookie), so this
-/// just stores the session and does a best-effort account read to adopt a sole
+/// `capture_session` already validated it, or says why it could not. An unverified
+/// session may not replace a stored one that works or can't be checked, unless
+/// `overwrite` is set, and warns even under `-q`. Otherwise this stores the session
+/// and does a best-effort account read to adopt a sole
 /// account as the default. A failing/UNVERIFIED accounts read must NOT undo a
 /// good login, so that read is non-fatal here (unlike `finish`, which proves a
 /// password login before storing it).
@@ -211,9 +225,19 @@ fn finish_browser(
     store: &ConfigStore,
     cfg: &mut Config,
     keep_config: bool,
+    overwrite: bool,
     creds: &CredentialStore,
-    session: Session,
+    signed_in: SignedIn,
 ) -> Result<(), CliError> {
+    let SignedIn {
+        session,
+        unverified,
+    } = signed_in;
+    if let (Some(why), false) = (&unverified, overwrite) {
+        let stored = creds.get(config::SESSION_KEY)?;
+        let state = crate::browser::stored_session_state(stored.as_ref().map(|s| s.expose()));
+        crate::browser::refuse_replacing(&state, why)?;
+    }
     creds.set(config::SESSION_KEY, &session.to_secret())?;
 
     // Best-effort: adopt a sole account as the default. The accounts endpoint
@@ -250,6 +274,13 @@ fn finish_browser(
                  try `sfi accounts list` or `sfi api GET <path>`)"
             ),
         }
+    }
+    // Even under `-q`: the session stored may not work.
+    if let Some(why) = &unverified {
+        eprintln!("{}", crate::browser::unverified_warning(why));
+    }
+    if common.json {
+        pk_cli_core::output::json(&AuthLogin::stored(unverified.is_none()).to_json());
     }
     Ok(())
 }

@@ -24,7 +24,7 @@ exists to feed the tax/money-optimizer pipeline:
 
 Conforms to `piekstra-cli/1` (see `~/Dev/cli-common/DESIGN.md` and
 `conformance.md`). Shared behavior comes from the `pk-cli-*` crates pinned to
-tag **v0.19.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
+tag **v0.20.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
 keychain, config, self-update, the `documents/v1` DTOs and its
 `verify`/`fs_safe` download hygiene, and `pk-cli-browser` for the browser
 sign-in).
@@ -147,11 +147,19 @@ DevTools protocol and stores them in the keychain (`session`).
   it validates against a **swappable** read (`SFI_VALIDATE_PATH`, default the
   accounts collection). In a scratch profile a 404 there doesn't block the
   login, since the read endpoints are themselves unverified. In the kept profile
-  the first inconclusive read, a 200 with no data included, ends the wait
-  (`Confirm::Fail`), so nothing unverified can replace a working session, because the `SOFI`
-  cookie may be left from an earlier sign-in and polling must not keep calling an
-  API that may be throttling. The capture reads no `localStorage`; keep it that way, or
-  a stale token bundle in the kept profile becomes readable on page load.
+  a read that can't decide (`pk_cli_http::inconclusive`, no answer, an edge
+  block's page, a 2xx that is empty or not JSON) is `Confirm::Undecided`, so nothing
+  unverified is stored from a `SOFI` cookie that may be left from an earlier
+  sign-in, and a finished sign-in is not lost, since that cookie does not survive
+  the stop. The crate does the backoff, the status line and exit 5. A 2xx alone is
+  not acceptance: `shows_an_account` tests the field's value, and a parseable answer
+  without one is `NotYet`. `Confirm::Fail` stays for what no later poll can change:
+  a 404 there in the kept profile, and a client that can't be built. An unverified
+  session from a scratch profile warns even under `-q`, and `refuse_replacing` keeps
+  it from replacing a stored one that works (exit 2) or can't be checked (exit 5)
+  without `--overwrite`. `ReadError` types each kind of answer, so nothing matches
+  on wording, and a reason holds fixed parts only. The capture reads no
+  `localStorage`; keep it that way, or a stale token bundle in the kept profile becomes readable on page load.
 - The GraphQL header recipe comes from the first `/bff/graphql` request a
   `www.sofi.com` page makes; the tab is held open up to 25 s for one. Only
   header names and the CSRF cookie's name are stored.
