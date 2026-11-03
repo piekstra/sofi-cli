@@ -24,7 +24,7 @@ exists to feed the tax/money-optimizer pipeline:
 
 Conforms to `piekstra-cli/1` (see `~/Dev/cli-common/DESIGN.md` and
 `conformance.md`). Shared behavior comes from the `pk-cli-*` crates pinned to
-tag **v0.16.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
+tag **v0.19.0** — reuse before writing (dates, output, `RangeArgs`, `Paged`,
 keychain, config, self-update, the `documents/v1` DTOs and its
 `verify`/`fs_safe` download hygiene, and `pk-cli-browser` for the browser
 sign-in).
@@ -122,17 +122,20 @@ DevTools protocol and stores them in the keychain (`session`).
   service `SFI_KEYCHAIN_SERVICE` names is a test namespace that must not read or
   change the real profile or config: `auth logout` skips the removal and says
   so, `auth login --browser` takes a scratch profile and says so
-  (`scratch_profile_choice`), and neither writes the real config unless
-  `--config` names a file (`keeps_real_config`). The config is loaded only in
-  the commands that use it, so logout runs on a file that can't be parsed. It is
-  a full Chrome profile: history with full URLs, the HTTP cache and site storage
-  sit outside Chrome's cookie encryption, and on Linux with no desktop keyring
-  so does the session cookie (SECURITY.md). A failed sign-in leaves it. The
-  whole sign-in runs inside `noting_kept_profile`, which adds the note to every
-  failure except the refusals before Chrome uses the profile. Every logout step
-  is attempted, and a failed logout's error says what was cleared and what
-  remains. `auth status` does not report the profile: cli-common v0.16.0 has no
-  call for it, and sfi must not work out the path itself.
+  (`scratch_profile_choice`), neither writes the real config unless `--config`
+  names a file (`keeps_real_config`), and `auth status` leaves `browser_profile`
+  out and says so. The config is loaded only in the commands that use it, so
+  logout runs on a file that can't be parsed. It is a full Chrome profile:
+  history with full URLs, the HTTP cache and site storage sit outside Chrome's
+  cookie encryption, and on Linux with no desktop keyring so does the session
+  cookie (SECURITY.md). A failed sign-in leaves it. The whole sign-in runs
+  inside `noting_kept_profile`, which adds the note to every failure except the
+  refusals before Chrome uses the profile. Every logout step is attempted, and a
+  failed logout's error says what was cleared and what remains. `auth status`
+  reports it through `browser_profile_status`, a seam the tests fill with
+  `profile_exists_in`: whether a profile is kept, not whether it is signed in.
+  sfi must not work out the path itself. `clear_site_storage` stays off, since
+  the capture reads only cookies and no token bundle is kept in site storage.
 - The capture reads only `www.sofi.com` pages (never the Auth0 login host),
   gates on the `SOFI` bearer cookie, and reads the whole `sofi.com` jar (both
   `login.sofi.com` and `www.sofi.com` — docs/api.md §2.5);

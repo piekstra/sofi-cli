@@ -32,15 +32,16 @@ Additionally, **statement links returned by the portal may be pre-signed**
 and grant access to a bank statement or tax form without a session. Never
 paste one into an issue, a log, or a commit.
 
-**The browser login (`--browser`) opens a short-lived Chrome debug port.**
-`sfi auth login --browser` launches Chrome with `--remote-debugging-port` and
-the profile `sfi` keeps, through cli-common's `pk-cli-browser`, to read the
-session cookies over the DevTools protocol. That debug port has **no
-authentication of its own** — anything that can reach `127.0.0.1:<port>` (or
-read the profile's `DevToolsActivePort`) could read the live `SOFI` cookie
-during the login window. The `www.sofi.com` tab is closed as soon as the session
-is read, and Chrome is stopped on every exit path, including Ctrl-C; a second
-Ctrl-C force-quits it. The port exists only while you are signing in.
+**The browser login (`--browser`) opens a short-lived Chrome debug port.** `sfi
+auth login --browser` launches Chrome with `--remote-debugging-port` and the
+profile `sfi` keeps, through cli-common's `pk-cli-browser`, to read the session
+cookies over the DevTools protocol. That debug port has **no authentication of
+its own** — anything that can reach `127.0.0.1:<port>` (or read the profile's
+`DevToolsActivePort`) could read the live `SOFI` cookie during the login window.
+The `www.sofi.com` tab is closed as soon as the session is read, and Chrome is
+stopped on every exit path, including Ctrl-C (a kept profile is asked to quit
+first, so a cookie set just before the close is on disk for the next sign-in); a
+second Ctrl-C force-quits it. The port exists only while you are signing in.
 
 **The browser profile stays on disk between sign-ins**, so SoFi remembers the
 device. It lives at `~/Library/Application Support/piekstra.sfi/browser-profile`
@@ -80,8 +81,8 @@ So:
   names `sfi auth logout`, which removes it and clears the stored session too. A
   second Ctrl-C force-quits with no message. A launch refused before Chrome uses
   it (no Chrome, a profile in use or needing repair) says nothing about it,
-  since `auth logout` would refuse the same profile. `sfi auth status` does not
-  report it: cli-common v0.16.0 has no call that says whether a profile exists.
+  since `auth logout` would refuse the same profile. `sfi auth status` reports
+  whether one is kept, not whether it is signed in.
 - A `SOFI` cookie left in it from an earlier sign-in is not trusted alone. In the
   kept profile only a working validation read accepts a session, and a 200 with
   no data is not one, so an unverified session cannot replace a working one. The
@@ -117,9 +118,10 @@ A service it names is a test namespace, and must not read or change the real
 kept browser profile or the real config. While it names one, `sfi auth logout`
 clears that service, leaves the real profile in place and says so, `sfi auth
 login --browser` uses a scratch profile, as with `--fresh-profile`, and says so
-in one line on stderr, and neither `auth logout --forget` nor a sign-in writes
-the real config: each says it was left. A `--config` you name is still written.
-A blank value names no service.
+in one line on stderr, neither `auth logout --forget` nor a sign-in writes the
+real config: each says it was left, and `sfi auth status` reads nothing about
+the real profile, leaves `browser_profile` out and says so. A `--config` you
+name is still written. A blank value names no service.
 
 ## What this tool does not do
 

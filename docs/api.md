@@ -95,17 +95,21 @@ session, Cloudflare's clearance) carry over and a later `--browser` should need
 less input. **UNVERIFIED-LIVE:** no second sign-in has run in a kept profile
 yet, so how far SoFi lets one go (and whether `/u/login` forwards a signed-in
 browser to `www.sofi.com`) is unknown. `--fresh-profile` runs one sign-in in a
-scratch profile, and `sfi auth logout` removes the kept one. It is a full Chrome
+scratch profile, and `sfi auth logout` removes the kept one. `sfi auth status`
+reports `browser_profile`: whether one is kept, not whether it is signed in, and
+nothing while `SFI_KEYCHAIN_SERVICE` names a service. It is a full Chrome
 profile: SECURITY.md lists what it holds. A sign-in that fails once Chrome may
 have used it leaves it in place, and its error says so and names `sfi auth
 logout`. A launch refused before that says nothing about it.
 
-**Trust boundary:** the CDP debug port has no auth of its own, so the profile
-is owner-only: `0700`, and refused when it is a symlink, another user's or any
+**Trust boundary:** the CDP debug port has no auth of its own, so the profile is
+owner-only: `0700`, and refused when it is a symlink, another user's or any
 other mode (anything that can read `DevToolsActivePort` could read the live
 `SOFI` cookie during the login window). The tab closes the moment the session is
-read, and Chrome is stopped on every exit path, including Ctrl-C. A scratch
-profile is created exclusively under an unpredictable name and removed with it.
+read, and Chrome is stopped on every exit path, including Ctrl-C (a kept
+profile's is asked to quit first, so a cookie set just before the close is on
+disk). A scratch profile is created exclusively under an unpredictable name and
+removed with it.
 
 ### 2.3 The retained password/`--code` flow — DEAD-LIVE
 

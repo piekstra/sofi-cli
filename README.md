@@ -91,7 +91,7 @@ the session cookie too: use `--fresh-profile` there. See
 - A sign-in that fails once Chrome may have used the kept profile, Ctrl-C
   included, leaves it in place, possibly signed in, and its error says so. `sfi
   auth logout` removes it, and clears the stored session too. `sfi auth status`
-  does not report the profile.
+  says whether a profile is kept, not whether it is signed in.
 
 Login and the balance / interest / statement-list reads are **verified live**
 (2026-08-24). While you are signed in, `sfi` also watches the app's pages for
