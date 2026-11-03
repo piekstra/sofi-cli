@@ -329,6 +329,9 @@ pub enum LoginStep {
 /// Client for SoFi's private API.
 pub struct Sofi {
     http: reqwest::blocking::Client,
+    /// For the requests with a password or a code in the body. reqwest re-sends a
+    /// body on a 307 or 308, and `secure_redirects` allows that to any https host.
+    auth_http: reqwest::blocking::Client,
     base: String,
     last_request: Cell<Option<Instant>>,
 }
@@ -353,15 +356,18 @@ impl Sofi {
         // second, invisible home for the same state. Whether SoFi sets cookies
         // on a login 302 hop that a final-response harvest would miss is a
         // live-capture follow-up (docs/api.md §2, §7).
-        let http = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
-            .default_headers(headers)
-            .timeout(Duration::from_secs(60))
-            .redirect(pk_cli_core::transport::secure_redirects())
-            .build()
-            .map_err(|e| CliError::Other(format!("failed to build HTTP client: {e}")))?;
+        let client = |redirects| {
+            reqwest::blocking::Client::builder()
+                .user_agent(USER_AGENT)
+                .default_headers(headers.clone())
+                .timeout(Duration::from_secs(60))
+                .redirect(redirects)
+                .build()
+                .map_err(|e| CliError::Other(format!("failed to build HTTP client: {e}")))
+        };
         Ok(Sofi {
-            http,
+            http: client(pk_cli_core::transport::secure_redirects())?,
+            auth_http: client(pk_cli_core::transport::same_host_redirects())?,
             base: base.into(),
             last_request: Cell::new(None),
         })
@@ -490,7 +496,7 @@ impl Sofi {
     ) -> Result<(Vec<String>, Value, u16), CliError> {
         self.pace();
         let resp = self
-            .http
+            .auth_http
             .post(self.url(path))
             .json(body)
             .send()
@@ -1707,6 +1713,23 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("leaves https"), "{err}");
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_password_is_not_re_sent_to_another_host_on_a_307() {
+        let (other, reached) = stub(|_| {
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+        });
+        let target = format!("{other}/collect");
+        let (base, _) = stub(move |_| {
+            format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        });
+        let err = Sofi::with_base(&base)
+            .unwrap()
+            .login("user", "dummy-password", "device", Channel::Sms)
+            .unwrap_err();
+        assert!(err.to_string().contains("another host"), "{err}");
+        assert!(reached.lock().unwrap().is_empty());
     }
 
     fn dummy_session() -> Session {

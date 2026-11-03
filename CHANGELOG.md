@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.5 — 2026-11-03
+
+- A password or a code is no longer re-sent to another host. On a 307 or 308 reqwest
+  re-sends a POST's body, and `sfi` allowed that to any https host. A sign-in POST now
+  refuses any redirect to another host, with exit 5 and the reason.
+
 ## v0.3.4 — 2026-11-03
 
 Built on cli-common v0.24.0.
