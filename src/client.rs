@@ -547,7 +547,7 @@ impl Sofi {
             .header(reqwest::header::COOKIE, &session.cookie)
             .query(query)
             .send()
-            .map_err(|e| CliError::Upstream(format!("calling {url}: {e}")))?;
+            .map_err(|e| ReadError::NoAnswer(CliError::Upstream(format!("calling {url}: {e}"))))?;
         json_response(resp)
     }
 
@@ -918,26 +918,38 @@ fn classify_and_parse(status: u16, url: &str, text: &str) -> Result<Value, CliEr
 /// Map a response onto the exit-code contract, treating HTML as an auth
 /// failure rather than trusting the status code.
 pub fn json_response(resp: reqwest::blocking::Response) -> Result<Value, ReadError> {
-    let (status, url, text) = response_parts(resp)?;
+    let said = pk_cli_http::inconclusive(&resp);
+    let retry_after = said.as_ref().and_then(|said| said.retry_after);
+    let (status, url, text) = response_parts(resp).map_err(ReadError::NoAnswer)?;
 
     // A lapsed session — or a Cloudflare interstitial — frequently comes back
     // as an HTML page with a 200, not a 401. So shape, not status, decides,
     // and this body-shaped check runs before the status ladder.
-    if looks_like_html(&text) {
+    let judged = if looks_like_html(&text) {
         if matches!(status, 403 | 429 | 503) || html_reads_as_edge_block(&text) {
-            return Err(ReadError::EdgeBlock { status });
+            return Err(ReadError::EdgeBlock {
+                status,
+                retry_after,
+            });
         }
-        return Err(ReadError::Failed(CliError::Auth(format!(
+        Err(CliError::Auth(format!(
             "expected JSON from {} but got an HTML page (HTTP {status}) — the session has \
              probably lapsed (or Cloudflare is challenging this client); run `sfi auth login`",
             without_query(&url)
-        ))));
-    }
-    classify_and_parse(status, &url, &text).map_err(|e| match e {
-        CliError::Upstream(_) if !(200..300).contains(&status) => {
-            ReadError::Status { status, error: e }
-        }
-        e => ReadError::Failed(e),
+        )))
+    } else {
+        classify_and_parse(status, &url, &text)
+    };
+    judged.map_err(|error| match error {
+        error if said.is_some() => ReadError::Inconclusive {
+            status,
+            retry_after,
+            error,
+        },
+        CliError::Auth(_) if status == 403 => ReadError::Forbidden(error),
+        CliError::Upstream(_) if (200..300).contains(&status) => ReadError::NotJson(error),
+        CliError::Upstream(_) => ReadError::Rejected { status, error },
+        error => ReadError::Failed(error),
     })
 }
 
@@ -965,21 +977,35 @@ fn looks_like_html(text: &str) -> bool {
 
 /// A URL for a message, without its query or fragment: a redirect to the login page
 /// carries a state value there, and a pre-signed link its signature.
-fn without_query(url: &str) -> &str {
+pub fn without_query(url: &str) -> &str {
     url.split(['?', '#']).next().unwrap_or(url)
 }
 
-/// Why a read returned no data, typed where a caller acts on the kind: a sign-in's
-/// hook warns on an edge block, and everything else is the family's `CliError`.
+/// Why a read returned no data, typed where a sign-in's hook acts on the kind. Each
+/// variant holds what a command reports; the hook words its reason from fixed parts.
 #[derive(Debug)]
 pub enum ReadError {
     /// A bot check or an edge block's HTML page (exit 3, as any refusal is).
     EdgeBlock {
         status: u16,
+        retry_after: Option<Duration>,
     },
-    /// A throttle or a server error. Its text may hold the provider's own message,
-    /// so a hook's reason names only the status.
-    Status {
+    /// Any other answer whose status says nothing about the session
+    /// ([`pk_cli_http::inconclusive`]): a throttle or a server error.
+    Inconclusive {
+        status: u16,
+        retry_after: Option<Duration>,
+        error: CliError,
+    },
+    /// No answer: the connection failed or dropped.
+    NoAnswer(CliError),
+    /// A 2xx that is not JSON.
+    NotJson(CliError),
+    /// A 403 that is not an edge's page: the session may be invalid, or it may be a
+    /// bot check, and nothing in the answer tells which.
+    Forbidden(CliError),
+    /// Another status the provider chose, which refuses the read.
+    Rejected {
         status: u16,
         error: CliError,
     },
@@ -995,8 +1021,13 @@ impl From<CliError> for ReadError {
 impl From<ReadError> for CliError {
     fn from(e: ReadError) -> Self {
         match e {
-            ReadError::EdgeBlock { status } => edge_block(status),
-            ReadError::Status { error, .. } | ReadError::Failed(error) => error,
+            ReadError::EdgeBlock { status, .. } => edge_block(status),
+            ReadError::Inconclusive { error, .. }
+            | ReadError::Rejected { error, .. }
+            | ReadError::NoAnswer(error)
+            | ReadError::NotJson(error)
+            | ReadError::Forbidden(error)
+            | ReadError::Failed(error) => error,
         }
     }
 }
@@ -1007,8 +1038,9 @@ impl From<ReadError> for CliError {
 fn edge_block(status: u16) -> CliError {
     CliError::Auth(format!(
         "SoFi answered with an HTML page (HTTP {status}): possibly a bot check or edge block, \
-         not an expired session. Wait before signing in again, since a retry now may \
-         hit the same block; then run `sfi auth login --browser`"
+         not an expired session. A new sign-in may not clear it, because the block is on the \
+         client rather than the session. Wait or try another network, then run `sfi auth login \
+         --browser`"
     ))
 }
 
@@ -1493,7 +1525,11 @@ mod tests {
         assert!(message.contains("not an expired session"), "{message}");
         assert_eq!(edge_block(403).exit_code(), 3);
         assert_eq!(
-            CliError::from(ReadError::EdgeBlock { status: 503 }).exit_code(),
+            CliError::from(ReadError::EdgeBlock {
+                status: 503,
+                retry_after: None
+            })
+            .exit_code(),
             3
         );
         assert_eq!(
@@ -1584,7 +1620,7 @@ mod tests {
                 .unwrap_err();
             server.join().unwrap();
             assert!(
-                matches!(err, ReadError::EdgeBlock { status } if status == code),
+                matches!(err, ReadError::EdgeBlock { status, .. } if status == code),
                 "{status}: {err:?}"
             );
             let err = CliError::from(err);
@@ -1612,7 +1648,7 @@ mod tests {
             .unwrap_err();
         server.join().unwrap();
         assert!(
-            matches!(err, ReadError::Status { status: 500, .. }),
+            matches!(err, ReadError::Inconclusive { status: 500, .. }),
             "{err:?}"
         );
         let err = CliError::from(err);

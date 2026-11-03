@@ -13,7 +13,7 @@
 //!   after a real read succeeds with it, so a login that authenticates but
 //!   can't fetch anything leaves nothing broken behind.
 
-use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, SetCredentialArgs};
+use pk_cli_auth::{AuthLogin, AuthMethod, AuthStatus, LoginArgs, SetCredentialArgs};
 use pk_cli_browser::{BrowserArgs, BrowserError};
 use pk_cli_config::ConfigStore;
 use pk_cli_core::{CliError, CommonArgs};
@@ -205,17 +205,18 @@ fn finish(
         );
     }
     if common.json {
-        // `sofi.get` above read the accounts with this session before it was stored.
-        pk_cli_core::output::json(&login_result(cfg, AuthMethod::Password, true));
+        let verified = crate::browser::shows_an_account(&body, ACCOUNTS_PATH);
+        pk_cli_core::output::json(&AuthLogin::stored(verified).to_json());
     }
     Ok(())
 }
 
 /// Persist a browser-harvested session.
 ///
-/// `capture_session` already validated it (best-effort — the validation
-/// endpoint is UNVERIFIED, so it may only confirm the bearer cookie), so this
-/// just stores the session and does a best-effort account read to adopt a sole
+/// `capture_session` already validated it, or says why it could not. An unverified
+/// session may not replace a stored one that works or can't be checked, unless
+/// `overwrite` is set, and warns even under `-q`. Otherwise this stores the session
+/// and does a best-effort account read to adopt a sole
 /// account as the default. A failing/UNVERIFIED accounts read must NOT undo a
 /// good login, so that read is non-fatal here (unlike `finish`, which proves a
 /// password login before storing it).
@@ -279,24 +280,9 @@ fn finish_browser(
         eprintln!("{}", crate::browser::unverified_warning(why));
     }
     if common.json {
-        pk_cli_core::output::json(&login_result(
-            cfg,
-            AuthMethod::BrowserSession,
-            unverified.is_none(),
-        ));
+        pk_cli_core::output::json(&AuthLogin::stored(unverified.is_none()).to_json());
     }
     Ok(())
-}
-
-/// A login's `--json` result: the family's `auth-status/v1`, plus `verified`, which
-/// says whether a read accepted the session.
-fn login_result(cfg: &Config, method: AuthMethod, verified: bool) -> serde_json::Value {
-    let mut status = AuthStatus::new(true, true, method);
-    status.username = cfg.username.clone();
-    status.account = cfg.account.clone();
-    let mut result = status.to_json();
-    result["verified"] = serde_json::Value::Bool(verified);
-    result
 }
 
 /// Save what a sign-in learned (who this install is for, an adopted default
@@ -772,26 +758,6 @@ mod tests {
             line.as_deref(),
             Some("SFI_KEYCHAIN_SERVICE is set, so the real browser profile is not reported")
         );
-    }
-
-    /// A login result always says whether a read accepted the session.
-    #[test]
-    fn a_login_result_always_says_whether_it_was_verified() {
-        let cfg = Config {
-            username: Some("user@example.com".into()),
-            account: Some("dummy-account".into()),
-        };
-        let verified = login_result(&cfg, AuthMethod::BrowserSession, true);
-        assert_eq!(verified["schema"], "auth-status/v1");
-        assert_eq!(verified["authenticated"], true);
-        assert_eq!(verified["method"], "browser-session");
-        assert_eq!(verified["verified"], true);
-        let unverified = login_result(&cfg, AuthMethod::BrowserSession, false);
-        assert_eq!(unverified["verified"], false);
-        assert_eq!(unverified["account"], "dummy-account");
-        let password = login_result(&cfg, AuthMethod::Password, true);
-        assert_eq!(password["method"], "password");
-        assert_eq!(password["verified"], true);
     }
 
     /// The logout's browser step on a temp dir through `test-util`'s

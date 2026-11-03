@@ -83,14 +83,16 @@ So:
   it (no Chrome, a profile in use or needing repair) says nothing about it,
   since `auth logout` would refuse the same profile. `sfi auth status` reports
   whether one is kept, not whether it is signed in.
-- A `SOFI` cookie left in it from an earlier sign-in is not trusted alone. In the kept profile only a working validation read accepts a session, and a 200
-  with no data is not one. A 429, 5xx, transport failure or empty answer on that
-  read keeps the wait going and reads again every 3 seconds, warning once, since
-  the cookie does not survive the stop and ending the wait could lose a finished
-  sign-in. Ctrl-C ends it. Only a 404 ends the wait. Only `--fresh-profile`, whose
-  profile started empty, accepts on the cookie when that read is inconclusive. It
-  warns even under `-q`, and that session never replaces a stored one that works
-  or could not be checked without `--overwrite`.
+- A `SOFI` cookie left in it from an earlier sign-in is not trusted alone. In the
+  kept profile only a validation read showing an account accepts a session, and a 2xx alone does not. A
+  read that can't decide (a 429, a 5xx, no answer, an edge block's page, a 2xx that
+  is empty or not JSON) keeps the tab and the jar, and the crate asks again after a
+  backoff, since the cookie does not survive the stop and ending the wait could lose
+  a finished sign-in. Ctrl-C ends it. A wait that runs out on it is exit 5 and stores
+  nothing. Only a 404 ends the wait early. Only `--fresh-profile`, whose profile
+  started empty, accepts on the cookie when that read can't decide. It warns even
+  under `-q`, and that session never replaces a stored one that works (exit 2) or
+  could not be checked (exit 5) without `--overwrite`.
 - `--fresh-profile` runs one sign-in in a scratch profile instead, created
   `0700`, exclusively, under an unpredictable name in the temp dir, and removed
   when the window closes. If it cannot be removed, `sfi` prints a warning naming
