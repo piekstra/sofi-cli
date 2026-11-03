@@ -146,11 +146,15 @@ DevTools protocol and stores them in the keychain (`session`).
   `Session::from_pairs` keeps the four session cookies. Before the tab closes
   it validates against a **swappable** read (`SFI_VALIDATE_PATH`, default the
   accounts collection). In a scratch profile a 404 there doesn't block the
-  login, since the read endpoints are themselves unverified. In the kept profile
-  the first inconclusive read, a 200 with no data included, ends the wait
-  (`Confirm::Fail`), so nothing unverified can replace a working session, because the `SOFI`
-  cookie may be left from an earlier sign-in and polling must not keep calling an
-  API that may be throttling. The capture reads no `localStorage`; keep it that way, or
+  login, since the read endpoints are themselves unverified. In the kept profile an inconclusive read, a 200 with no data
+  included, keeps the wait going (`Confirm::NotYet`) and warns once, so nothing
+  unverified is stored from a `SOFI` cookie that may be left from an earlier
+  sign-in, and a finished sign-in is not lost, since that cookie does not survive
+  the stop. `Confirm::Fail` stays for what no later poll can change: a 404 there
+  in the kept profile, and a client that can't be built. An unverified session
+  from a scratch profile warns even under `-q`, and `refuse_replacing` keeps it
+  from replacing a working one without `--overwrite`. The edge block is a typed
+  `ReadError`, never matched on its wording. The capture reads no `localStorage`; keep it that way, or
   a stale token bundle in the kept profile becomes readable on page load.
 - The GraphQL header recipe comes from the first `/bff/graphql` request a
   `www.sofi.com` page makes; the tab is held open up to 25 s for one. Only

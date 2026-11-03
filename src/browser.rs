@@ -43,14 +43,15 @@
 //!   ([`derive_recipe`]); without one, the client uses its modeled defaults.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pk_cli_browser::{BrowserError, Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT};
 use pk_cli_core::CliError;
 
 use crate::client::{
-    percent_decode, validation_path, GraphqlRecipe, Session, Sofi, GRAPHQL_PATH, LOGIN_PAGE_URL,
-    SESSION_COOKIE,
+    percent_decode, validation_path, GraphqlRecipe, ReadError, Session, Sofi, GRAPHQL_PATH,
+    LOGIN_PAGE_URL, SESSION_COOKIE,
 };
 use crate::config::{self, SERVICE_ENV};
 
@@ -95,10 +96,9 @@ const CLIENT_MANAGED_HEADERS: [&str; 11] = [
 
 /// What `sfi auth login --browser` reads: the `SOFI` cookie as the gate, the
 /// `sofi.com` jar as the session, the app's first `/bff/graphql` request for
-/// the recipe, and [`confirm`] before the tab closes. `quiet` suppresses the
-/// validation note and the edge block warning the confirm hook may print. A capture
-/// serves one window, so the warning's once-only state lives here.
-fn browser_capture(kept_profile: bool, quiet: bool) -> Result<Capture, CliError> {
+/// the recipe, and [`confirm`] before the tab closes. A capture serves one window,
+/// which `window` tracks.
+fn browser_capture(kept_profile: bool, window: Arc<Window>) -> Result<Capture, CliError> {
     Ok(Capture::new(LABEL, HostRule::exact(APP_HOST)?)
         .cookie(format!("https://{APP_HOST}/"), SESSION_COOKIE)
         .cookie_jar(JAR_DOMAIN)
@@ -107,24 +107,22 @@ fn browser_capture(kept_profile: bool, quiet: bool) -> Result<Capture, CliError>
             RECIPE_OBSERVE_DEADLINE,
         )
         .hint(SIGN_IN_HINT)
-        .confirm({
-            let warned = AtomicBool::new(false);
-            move |candidate| confirm(candidate, kept_profile, quiet, &warned)
-        }))
+        .confirm(move |candidate| confirm(candidate, kept_profile, &window)))
 }
 
 /// Open the browser, wait for the owner to finish logging in, and return a
 /// validated [`Session`], with the app's GraphQL header recipe when a request
 /// was seen. `fresh_profile` runs this sign-in in a scratch profile instead of
 /// the one sfi keeps. `quiet` suppresses the progress lines on stderr.
-pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<Session, BrowserError> {
+pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<SignedIn, BrowserError> {
     let kept_profile = runs_in_kept_profile(fresh_profile);
+    let window = Arc::new(Window::new(quiet));
     let captured = pk_cli_browser::capture(
         Launch::new(config::BIN)
             .url(LOGIN_PAGE_URL)
             .fresh_profile(fresh_profile)
             .quiet(quiet),
-        &browser_capture(kept_profile, quiet).map_err(BrowserError::Handler)?,
+        &browser_capture(kept_profile, Arc::clone(&window)).map_err(BrowserError::Handler)?,
         DEFAULT_TIMEOUT,
     )?;
     let session = session_from_capture(&captured).map_err(BrowserError::Handler)?;
@@ -134,7 +132,17 @@ pub fn capture_session(fresh_profile: bool, quiet: bool) -> Result<Session, Brow
             None => eprintln!("{NO_RECIPE_NOTE}"),
         }
     }
-    Ok(session)
+    Ok(SignedIn {
+        session,
+        unverified: window.unverified(),
+    })
+}
+
+/// A finished browser sign-in.
+pub struct SignedIn {
+    pub session: Session,
+    /// Why the read could not verify the session, when it was accepted anyway.
+    pub unverified: Option<String>,
 }
 
 /// Whether a sign-in runs in the kept profile. The crate keeps one on unix only;
@@ -257,66 +265,113 @@ fn session_from_jar(captured: &Captured) -> Option<Session> {
 /// The confirm hook: validate the candidate session with one read of the
 /// configured validation path against the live API before the tab closes
 /// ([`confirm_with`]).
-fn confirm(candidate: &Captured, kept_profile: bool, quiet: bool, warned: &AtomicBool) -> Confirm {
-    let answer = confirm_with(
+fn confirm(candidate: &Captured, kept_profile: bool, window: &Window) -> Confirm {
+    confirm_with(
         candidate,
-        quiet,
+        window,
         kept_profile,
         &validation_path(),
         Sofi::new,
-    );
-    if let Some(line) = edge_block_warning(warned, &answer, quiet) {
+    )
+}
+
+/// The confirm hook with the validation read's path and the client it goes
+/// through, both given, so nothing here reads the environment. It prints what
+/// [`Window::record`] returns.
+fn confirm_with(
+    candidate: &Captured,
+    window: &Window,
+    kept_profile: bool,
+    path: &str,
+    client: impl FnOnce() -> Result<Sofi, CliError>,
+) -> Confirm {
+    let (answer, noted) = decide(candidate, kept_profile, path, client);
+    if let Some(line) = window.record(noted) {
         eprintln!("{line}");
     }
     answer
 }
 
-/// The line an edge block earns during a sign-in, so the owner need not wait out
-/// the timeout to learn of it. The first such answer in a window gets it, and later
-/// polls stay silent. Anything else stays silent too: a stale cookie in a kept profile
-/// answers a 401 or a plain 403 before the owner has signed in. `quiet` suppresses it.
-/// The answer stays `NotYet`, since the window can still clear.
-fn edge_block_warning(warned: &AtomicBool, answer: &Confirm, quiet: bool) -> Option<String> {
-    let Confirm::NotYet(reason) = answer else {
-        return None;
-    };
-    if quiet || !crate::client::names_an_edge_block(reason) || warned.swap(true, Ordering::Relaxed)
-    {
-        return None;
-    }
-    Some(format!(
-        "warning: SoFi's answer to this sign-in is {}. Press Ctrl-C rather than wait out \
-         the timeout, or keep waiting if it clears in the window.",
-        crate::client::EDGE_BLOCK
-    ))
-}
-
-/// The confirm hook with the validation read's path and the client it goes
-/// through, both given, so nothing here reads the environment: a jar without
-/// the `SOFI` cookie keeps the wait going without building a client;
-/// otherwise one read of `path` decides ([`confirm_outcome`]). A test passes
-/// a literal path and a client on a loopback server.
-fn confirm_with(
+/// A jar without the `SOFI` cookie keeps the wait going without building a client;
+/// otherwise one read of `path` decides ([`confirm_outcome`]). A test passes a
+/// literal path and a client on a loopback server.
+fn decide(
     candidate: &Captured,
-    quiet: bool,
     kept_profile: bool,
     path: &str,
     client: impl FnOnce() -> Result<Sofi, CliError>,
-) -> Confirm {
+) -> (Confirm, Option<Noted>) {
     let Some(session) = session_from_jar(candidate) else {
-        return Confirm::NotYet(format!(
-            "the {JAR_DOMAIN} jar holds no {SESSION_COOKIE} cookie yet"
-        ));
+        return (
+            Confirm::NotYet(format!(
+                "the {JAR_DOMAIN} jar holds no {SESSION_COOKIE} cookie yet"
+            )),
+            None,
+        );
     };
-    let (answer, note) = confirm_outcome(validate(client, &session, path), path, kept_profile);
-    if let (Some(note), false) = (note, quiet) {
-        eprintln!("note: {note}");
-    }
-    answer
+    confirm_outcome(validate(client, &session, path), path, kept_profile)
 }
 
-/// What a validation read means for the capture, and the note to print with
-/// it. Pure, so the mapping is tested without a browser or a live endpoint:
+/// What one window remembers between polls. A capture serves one window.
+struct Window {
+    quiet: bool,
+    warned: AtomicBool,
+    unverified: Mutex<Option<String>>,
+}
+
+impl Window {
+    fn new(quiet: bool) -> Self {
+        Window {
+            quiet,
+            warned: AtomicBool::new(false),
+            unverified: Mutex::new(None),
+        }
+    }
+
+    /// Take in what a read came to. Returns the line to print: the first edge block
+    /// or inconclusive read in a window gets one, so the owner need not wait out the
+    /// timeout to learn of it, and later polls stay silent. `quiet` suppresses it.
+    /// Anything else stays silent: a stale cookie in a kept profile answers a 401 or
+    /// a plain 403 before the owner has signed in, and that does not use up the line.
+    /// The answer stays `NotYet`, since the window can still clear.
+    fn record(&self, noted: Option<Noted>) -> Option<String> {
+        let line = match noted? {
+            Noted::Unverified(why) => {
+                *self.unverified.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                return None;
+            }
+            Noted::EdgeBlock => "warning: SoFi's answer to this sign-in is possibly a bot check \
+                                 or edge block. Press Ctrl-C rather than wait out the timeout, \
+                                 or keep waiting if it clears in the window."
+                .to_string(),
+            Noted::Inconclusive(why) => format!(
+                "warning: {why}. It reads again every 3 seconds, or press Ctrl-C to end the wait."
+            ),
+        };
+        (!self.quiet && !self.warned.swap(true, Ordering::Relaxed)).then_some(line)
+    }
+
+    fn unverified(&self) -> Option<String> {
+        self.unverified
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+}
+
+/// What a read came to, beyond the answer the crate is given.
+#[derive(Debug, PartialEq, Eq)]
+enum Noted {
+    /// A bot check or an edge block answered, and the wait goes on.
+    EdgeBlock,
+    /// The read could not decide, and the wait goes on.
+    Inconclusive(String),
+    /// The read could not decide, and the session was accepted anyway.
+    Unverified(String),
+}
+
+/// What a validation read means for the capture. Pure, so the mapping is tested
+/// without a browser or a live endpoint:
 ///
 /// - the read worked: capture the session;
 /// - the read was refused: keep the tab open and ask again next poll. The refusal's
@@ -324,39 +379,109 @@ fn confirm_with(
 ///   one. It holds a status and a URL without its query, never a cookie value or
 ///   the answer's body;
 /// - the read was inconclusive, in a scratch profile: capture the session on the
-///   `SOFI` cookie, and say so. That profile started empty, so the cookie came
-///   from this sign-in;
-/// - the read was inconclusive, in a kept profile: end the wait on the first such
-///   answer, naming it. The cookie may be left from an earlier sign-in, so without
-///   a working read it proves nothing, and polling again would keep calling an
-///   API that may be throttling this client;
+///   `SOFI` cookie, unverified. That profile started empty, so the cookie came from
+///   this sign-in;
+/// - the read was inconclusive, in a kept profile: keep the tab open and read again
+///   next poll, with the read's own reason. The cookie may be left from an earlier
+///   sign-in, so it proves nothing without a working read, and it does not survive
+///   the stop, so ending the wait could lose a finished sign-in;
+/// - the validation path does not exist, in a kept profile: end the wait, since no
+///   later poll can change that;
 /// - the client could not be built: end the wait with that error.
 fn confirm_outcome(
     validated: Result<Probe, CliError>,
     path: &str,
     kept_profile: bool,
-) -> (Confirm, Option<String>) {
+) -> (Confirm, Option<Noted>) {
+    let refused =
+        |why: &str| Confirm::NotYet(format!("the validation read {path} was refused: {why}"));
     match validated {
         Ok(Probe::Ready) => (Confirm::Ready, None),
-        Ok(Probe::NotYet(why)) => (
-            Confirm::NotYet(format!("the validation read {path} was refused: {why}")),
-            None,
-        ),
-        Ok(Probe::Unverifiable(why)) if kept_profile => (
+        Ok(Probe::NotYet { why, edge_block }) => {
+            (refused(&why), edge_block.then_some(Noted::EdgeBlock))
+        }
+        Ok(Probe::Unverifiable(why)) if kept_profile => {
+            (Confirm::NotYet(why.clone()), Some(Noted::Inconclusive(why)))
+        }
+        Ok(Probe::NoSuchPath(why)) if kept_profile => (
             Confirm::Fail(CliError::Upstream(format!(
                 "{why}. The kept browser profile's {SESSION_COOKIE} cookie may be from an earlier \
-                 sign-in, so it was not accepted without that read. Retry `sfi auth login \
-                 --browser` in a while (if you signed in, there is nothing further to enter), or \
-                 use `--fresh-profile`."
+                 sign-in, so it was not accepted without that read. Fix that, then retry `sfi auth \
+                 login --browser` (if you signed in, there is nothing further to enter), or use \
+                 `--fresh-profile`."
             ))),
             None,
         ),
-        Ok(Probe::Unverifiable(why)) => (
-            Confirm::Ready,
-            Some(format!("{why}; accepting on the {SESSION_COOKIE} cookie")),
-        ),
+        Ok(Probe::Unverifiable(why) | Probe::NoSuchPath(why)) => {
+            (Confirm::Ready, Some(Noted::Unverified(why)))
+        }
         Err(e) => (Confirm::Fail(e), None),
     }
+}
+
+/// A session a sign-in could not verify may not replace a working stored one without
+/// `--overwrite` (cli-common DESIGN.md §2.2). What is stored decides.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StoredSession {
+    Absent,
+    /// It can't be read, it has expired, or the provider refused it.
+    Dead,
+    Working,
+    /// One read could not tell, so it may still work.
+    Unknown,
+}
+
+/// One read of the stored session, to learn whether an unverified one may replace it.
+pub fn stored_session_state(raw: Option<&str>) -> StoredSession {
+    stored_state_with(raw, &validation_path(), Sofi::new)
+}
+
+fn stored_state_with(
+    raw: Option<&str>,
+    path: &str,
+    client: impl FnOnce() -> Result<Sofi, CliError>,
+) -> StoredSession {
+    let Some(raw) = raw else {
+        return StoredSession::Absent;
+    };
+    let Ok(session) = Session::from_json(raw) else {
+        return StoredSession::Dead;
+    };
+    if session.is_expired() {
+        return StoredSession::Dead;
+    }
+    match validate(client, &session, path) {
+        Ok(Probe::Ready) => StoredSession::Working,
+        // An edge block says nothing about the session.
+        Ok(Probe::NotYet {
+            edge_block: false, ..
+        }) => StoredSession::Dead,
+        _ => StoredSession::Unknown,
+    }
+}
+
+/// Refuse to replace a stored session that works or may work. `why` is why the new
+/// one is unverified.
+pub fn refuse_replacing(stored: &StoredSession, why: &str) -> Result<(), CliError> {
+    let state = match stored {
+        StoredSession::Absent | StoredSession::Dead => return Ok(()),
+        StoredSession::Working => "still works",
+        StoredSession::Unknown => "could not be checked",
+    };
+    Err(CliError::Usage(format!(
+        "this sign-in's session could not be verified ({why}), and the stored one {state}, so \
+         the stored one was kept. To replace it, run `{} auth login --browser --overwrite`",
+        config::BIN
+    )))
+}
+
+/// What a stored unverified session prints. It goes out even under `-q`.
+pub fn unverified_warning(why: &str) -> String {
+    format!(
+        "warning: this session is stored unverified: {why}. If it does not work, run `{} auth \
+         login --browser --overwrite`.",
+        config::BIN
+    )
 }
 
 /// Derive a [`GraphqlRecipe`] from an observed `/bff/graphql` request's headers
@@ -442,20 +567,21 @@ enum Probe {
     Ready,
     /// Refused (an HTML page, a redirect to one, a 401 or a 403) — keep waiting. The
     /// owner may not have finished signing in, or a bot check may be in the way, so
-    /// this holds what the read was told.
-    NotYet(String),
-    /// Can't tell (the validation endpoint is itself unverified — a 404, or a
-    /// transient upstream error). Accept on the bearer cookie, but say so.
+    /// this holds what the read was told, and whether an edge block said it.
+    NotYet { why: String, edge_block: bool },
+    /// Can't tell: a transient upstream error, or a 200 with nothing in it.
     Unverifiable(String),
+    /// A 404: the validation endpoint, itself unverified, is not there.
+    NoSuchPath(String),
 }
 
-/// Classify a validation read. Pure, so the accept/keep-waiting/accept-unverified
-/// decision is tested without a live endpoint.
+/// Classify a validation read. Pure, so the decision is tested without a live
+/// endpoint.
 ///
 /// The validation endpoint (`validation_path`) is swappable because it was
 /// UNVERIFIED-LIVE when this was written, so a 404 must not block a capture
-/// whose bearer cookie is present.
-fn probe_outcome(res: &Result<serde_json::Value, CliError>, path: &str) -> Probe {
+/// whose bearer cookie is present in a scratch profile.
+fn probe_outcome(res: &Result<serde_json::Value, ReadError>, path: &str) -> Probe {
     match res {
         Ok(body) if holds_data(body) => Probe::Ready,
         // A 200 with nothing in it (`parse_json` reads an empty body as null)
@@ -463,13 +589,25 @@ fn probe_outcome(res: &Result<serde_json::Value, CliError>, path: &str) -> Probe
         Ok(_) => Probe::Unverifiable(format!(
             "the validation read {path} answered 200 with no data"
         )),
+        Err(ReadError::EdgeBlock { status }) => Probe::NotYet {
+            why: CliError::from(ReadError::EdgeBlock { status: *status }).to_string(),
+            edge_block: true,
+        },
+        Err(ReadError::Status { status, .. }) => Probe::Unverifiable(format!(
+            "the validation read {path} was inconclusive (HTTP {status})"
+        )),
         // HTML-where-JSON-expected, a login redirect, or a 401/403 all map to Auth.
-        Err(CliError::Auth(why)) => Probe::NotYet(why.clone()),
-        Err(CliError::NotFound(_)) => Probe::Unverifiable(format!(
+        Err(ReadError::Failed(CliError::Auth(why))) => Probe::NotYet {
+            why: why.clone(),
+            edge_block: false,
+        },
+        Err(ReadError::Failed(CliError::NotFound(_))) => Probe::NoSuchPath(format!(
             "the validation read {path} returned 404 — that endpoint is unverified \
              (set SFI_VALIDATE_PATH to a known read)"
         )),
-        Err(e) => Probe::Unverifiable(format!("the validation read {path} was inconclusive ({e})")),
+        Err(ReadError::Failed(e)) => {
+            Probe::Unverifiable(format!("the validation read {path} was inconclusive ({e})"))
+        }
     }
 }
 
@@ -491,7 +629,7 @@ fn validate(
     path: &str,
 ) -> Result<Probe, CliError> {
     let sofi = client()?;
-    let res = sofi.get(session, &sofi.url(path), &[]);
+    let res = sofi.read(session, &sofi.url(path), &[]);
     Ok(probe_outcome(&res, path))
 }
 
@@ -512,7 +650,7 @@ mod tests {
     #[test]
     fn the_browser_capture_is_well_formed() {
         for quiet in [false, true] {
-            let capture = browser_capture(false, quiet).unwrap();
+            let capture = browser_capture(false, Arc::new(Window::new(quiet))).unwrap();
             capture.validate().unwrap();
             assert_eq!(capture.label(), "SoFi");
         }
@@ -629,8 +767,11 @@ mod tests {
     fn probe_not_yet_on_an_auth_answer() {
         // HTML/login-redirect/401 all surface as CliError::Auth.
         assert_eq!(
-            probe_outcome(&Err(CliError::Auth("html login page".into())), "/x"),
-            Probe::NotYet("html login page".into())
+            probe_outcome(&Err(CliError::Auth("html login page".into()).into()), "/x"),
+            Probe::NotYet {
+                why: "html login page".into(),
+                edge_block: false
+            }
         );
     }
 
@@ -638,15 +779,15 @@ mod tests {
     fn probe_unverifiable_on_a_404_or_other_error() {
         // The default validation endpoint is swappable, so a 404 must not
         // block a capture whose bearer cookie is present.
-        match probe_outcome(&Err(CliError::NotFound("404".into())), "/accounts") {
-            Probe::Unverifiable(why) => {
+        match probe_outcome(&Err(CliError::NotFound("404".into()).into()), "/accounts") {
+            Probe::NoSuchPath(why) => {
                 assert!(why.contains("/accounts"));
                 assert!(why.contains("SFI_VALIDATE_PATH"));
             }
             other => panic!("expected Unverifiable, got {other:?}"),
         }
         assert!(matches!(
-            probe_outcome(&Err(CliError::Upstream("500".into())), "/x"),
+            probe_outcome(&Err(CliError::Upstream("500".into()).into()), "/x"),
             Probe::Unverifiable(_)
         ));
     }
@@ -663,8 +804,11 @@ mod tests {
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert_eq!(note, None);
 
-        let (answer, note) =
-            confirm_outcome(Ok(Probe::NotYet("dummy refusal".into())), path, false);
+        let refused = Probe::NotYet {
+            why: "dummy refusal".into(),
+            edge_block: false,
+        };
+        let (answer, note) = confirm_outcome(Ok(refused), path, false);
         match answer {
             Confirm::NotYet(reason) => {
                 assert_eq!(
@@ -678,7 +822,7 @@ mod tests {
 
         let (answer, note) = confirm_outcome(Ok(Probe::Unverifiable("why".into())), path, false);
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
-        assert_eq!(note.as_deref(), Some("why; accepting on the SOFI cookie"));
+        assert_eq!(note, Some(Noted::Unverified("why".into())));
 
         let (answer, note) = confirm_outcome(Err(CliError::Other("no client".into())), path, false);
         match answer {
@@ -698,13 +842,17 @@ mod tests {
     fn a_validation_answer_maps_to_the_confirm_answer() {
         let path = "/x";
         let confirm_for = |res: Result<serde_json::Value, CliError>| {
+            let res = res.map_err(ReadError::from);
             confirm_outcome(Ok(probe_outcome(&res, path)), path, false)
         };
         let (answer, _) = confirm_for(Err(CliError::Auth("401".into())));
         assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
         let (answer, note) = confirm_for(Err(CliError::NotFound("404".into())));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
-        assert!(note.unwrap().contains("SFI_VALIDATE_PATH"));
+        let Some(Noted::Unverified(why)) = note else {
+            panic!("expected an unverified note, got {note:?}");
+        };
+        assert!(why.contains("SFI_VALIDATE_PATH"), "{why}");
         let (answer, note) = confirm_for(Ok(json!({"accounts": []})));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
         assert_eq!(note, None);
@@ -917,9 +1065,13 @@ mod tests {
         body: &str,
     ) -> (Confirm, String) {
         let (base, server) = loopback(status, content_type, body);
-        let answer = confirm_with(candidate, true, false, VALIDATION_PATH, || {
-            Sofi::with_base(&base)
-        });
+        let answer = confirm_with(
+            candidate,
+            &Window::new(true),
+            false,
+            VALIDATION_PATH,
+            || Sofi::with_base(&base),
+        );
         let head = server
             .join()
             .expect("the loopback server ran")
@@ -941,10 +1093,14 @@ mod tests {
         ] {
             for quiet in [false, true] {
                 let answers = [
-                    confirm(&candidate, false, quiet, &AtomicBool::new(false)),
-                    confirm_with(&candidate, quiet, false, VALIDATION_PATH, || {
-                        panic!("no client is built before the SOFI cookie is set")
-                    }),
+                    confirm(&candidate, false, &Window::new(quiet)),
+                    confirm_with(
+                        &candidate,
+                        &Window::new(quiet),
+                        false,
+                        VALIDATION_PATH,
+                        || panic!("no client is built before the SOFI cookie is set"),
+                    ),
                 ];
                 for answer in answers {
                     match answer {
@@ -1031,33 +1187,54 @@ mod tests {
         }
     }
 
+    /// One poll's read in a scratch profile: the answer, and the line `window` says
+    /// to print.
+    fn scratch_read(
+        window: &Window,
+        status: &str,
+        content_type: &str,
+        body: &str,
+    ) -> (Confirm, Option<String>) {
+        let (base, server) = loopback(status, content_type, body);
+        let (answer, noted) = decide(&signed_in(), false, VALIDATION_PATH, || {
+            Sofi::with_base(&base)
+        });
+        server.join().expect("the loopback server ran");
+        (answer, window.record(noted))
+    }
+
     /// An edge block warns once per window, whatever the polls after it answer.
     #[test]
     fn an_edge_block_warns_once_per_window() {
-        let warned = AtomicBool::new(false);
+        let window = Window::new(false);
         let block =
-            || confirm_on_loopback(&signed_in(), "403 Forbidden", "text/html", "<html></html>").0;
-        let first = edge_block_warning(&warned, &block(), false).expect("the first block warns");
+            |window: &Window| scratch_read(window, "403 Forbidden", "text/html", "<html></html>");
+        let (answer, first) = block(&window);
+        assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+        let first = first.expect("the first block warns");
         assert!(
             first.contains("possibly a bot check or edge block"),
             "{first}"
         );
         assert!(first.contains("Ctrl-C"), "{first}");
-        assert_eq!(edge_block_warning(&warned, &block(), false), None);
-        assert_eq!(edge_block_warning(&warned, &block(), false), None);
+        assert_eq!(block(&window).1, None);
+        assert_eq!(block(&window).1, None);
 
         // Another window has its own state.
-        assert!(edge_block_warning(&AtomicBool::new(false), &block(), false).is_some());
+        assert!(block(&Window::new(false)).1.is_some());
     }
 
     /// `-q` suppresses the warning.
     #[test]
     fn a_quiet_sign_in_is_not_warned_of_an_edge_block() {
-        let warned = AtomicBool::new(false);
-        let (block, _) =
-            confirm_on_loopback(&signed_in(), "403 Forbidden", "text/html", "<html></html>");
-        assert!(matches!(block, Confirm::NotYet(_)), "{block:?}");
-        assert_eq!(edge_block_warning(&warned, &block, true), None);
+        let (answer, line) = scratch_read(
+            &Window::new(true),
+            "403 Forbidden",
+            "text/html",
+            "<html></html>",
+        );
+        assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+        assert_eq!(line, None);
     }
 
     /// A stale cookie in a kept profile answers a 401 or a plain 403 before the owner
@@ -1065,30 +1242,19 @@ mod tests {
     /// the warning, so a block after them still earns it.
     #[test]
     fn a_refusal_that_is_not_block_shaped_stays_silent() {
-        let warned = AtomicBool::new(false);
+        let window = Window::new(false);
+        let login_page = include_str!("../tests/fixtures/login-page-with-challenge-words.html");
         for (status, content_type, body) in [
             ("401 Unauthorized", "application/json", ""),
             ("403 Forbidden", "application/json", ""),
-            ("200 OK", "text/html", "<!DOCTYPE html><html>Sign in</html>"),
+            ("200 OK", "text/html", login_page),
         ] {
-            let (answer, _) = confirm_on_loopback(&signed_in(), status, content_type, body);
+            let (answer, line) = scratch_read(&window, status, content_type, body);
             assert!(matches!(answer, Confirm::NotYet(_)), "{status}: {answer:?}");
-            assert_eq!(
-                edge_block_warning(&warned, &answer, false),
-                None,
-                "{status}"
-            );
+            assert_eq!(line, None, "{status}");
         }
-        let (block, _) =
-            confirm_on_loopback(&signed_in(), "403 Forbidden", "text/html", "<html></html>");
-        assert!(edge_block_warning(&warned, &block, false).is_some());
-    }
-
-    /// Only a refusal can warn.
-    #[test]
-    fn only_a_not_yet_answer_can_warn_of_an_edge_block() {
-        let warned = AtomicBool::new(false);
-        assert_eq!(edge_block_warning(&warned, &Confirm::Ready, false), None);
+        let (_, line) = scratch_read(&window, "403 Forbidden", "text/html", "<html></html>");
+        assert!(line.is_some());
     }
 
     /// A read that says nothing about the session (a 404 from the unverified
@@ -1101,92 +1267,277 @@ mod tests {
         }
     }
 
-    /// In a kept profile a `SOFI` cookie may be left from an earlier sign-in. An
-    /// inconclusive read neither stores it nor polls again: the first one ends
-    /// the wait, names the answer and says how to go on. A working read and a
-    /// signed-out answer mean what they mean in a scratch profile.
+    /// In a kept profile a `SOFI` cookie may be left from an earlier sign-in, so an
+    /// inconclusive read stores nothing. It keeps the wait going with the read's own
+    /// reason, since the cookie does not survive the stop. Only a path that does not
+    /// exist ends the wait, since no later poll can change that. A working read and a
+    /// refused answer mean what they mean in a scratch profile.
     #[test]
     fn a_kept_profiles_cookie_is_not_accepted_without_a_working_read() {
         let path = "/x";
         let kept = |res: Result<serde_json::Value, CliError>| {
+            let res = res.map_err(ReadError::from);
             confirm_outcome(Ok(probe_outcome(&res, path)), path, true)
         };
         for (res, named) in [
-            (Err(CliError::NotFound("HTTP 404 from dummy".into())), "404"),
             (Err(CliError::Upstream("HTTP 500".into())), "500"),
             (Err(CliError::Upstream("dummy connect".into())), "connect"),
         ] {
             let (answer, note) = kept(res);
-            assert_kept_read_fails(answer, named);
-            assert_eq!(note, None);
+            assert_kept_read_waits(answer, named);
+            assert!(matches!(note, Some(Noted::Inconclusive(_))), "{note:?}");
         }
+        let (answer, note) = kept(Err(CliError::NotFound("HTTP 404 from dummy".into())));
+        match answer {
+            Confirm::Fail(e) => {
+                let text = e.to_string();
+                assert_eq!(e.exit_code(), 5, "{text}");
+                assert!(text.contains("404"), "{text}");
+                assert!(text.contains("nothing further to enter"), "{text}");
+                assert!(text.contains("--fresh-profile"), "{text}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+        assert_eq!(note, None);
         let (answer, _) = kept(Ok(json!({"accounts": []})));
         assert!(matches!(answer, Confirm::Ready), "{answer:?}");
-        let (answer, _) = kept(Err(CliError::Auth("401".into())));
+        let (answer, note) = kept(Err(CliError::Auth("401".into())));
         assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+        assert_eq!(note, None);
     }
 
     /// A 200 with nothing in it is not a verified session. In a kept profile,
     /// where the cookie may be stale, it must not reach the keychain and replace
-    /// a working session; in a scratch profile it is accepted with a note.
+    /// a working session; in a scratch profile it is accepted, unverified.
     #[test]
     fn a_two_hundred_with_no_data_does_not_verify_a_kept_session() {
         for body in ["", "null", "{}", "[]", "true", "0", r#""dummy""#] {
-            let (base, server) = loopback("200 OK", "application/json", body);
-            let answer = confirm_with(&signed_in(), true, true, VALIDATION_PATH, || {
-                Sofi::with_base(&base)
-            });
-            server.join().expect("the loopback server ran");
-            assert_kept_read_fails(answer, "no data");
+            let (answer, _) = kept_read(&Window::new(true), "200 OK", "application/json", body);
+            assert_kept_read_waits(answer, "no data");
 
             let (answer, _) = confirm_on_loopback(&signed_in(), "200 OK", "application/json", body);
             assert!(matches!(answer, Confirm::Ready), "{body:?}: {answer:?}");
         }
     }
 
-    fn assert_kept_read_fails(answer: Confirm, named: &str) {
+    fn assert_kept_read_waits(answer: Confirm, named: &str) {
         match answer {
-            Confirm::Fail(e) => {
-                let text = e.to_string();
-                assert_eq!(e.exit_code(), 5, "{text}");
-                assert!(text.contains(named), "{text}");
-                assert!(text.contains("nothing further to enter"), "{text}");
-                assert!(text.contains("--fresh-profile"), "{text}");
-                assert!(!text.contains("accepting"), "{text}");
+            Confirm::NotYet(reason) => {
+                assert!(reason.contains(named), "{reason}");
+                assert!(
+                    reason.contains("inconclusive") || reason.contains("no data"),
+                    "{reason}"
+                );
             }
-            other => panic!("expected Fail, got {other:?}"),
+            other => panic!("expected NotYet, got {other:?}"),
         }
     }
 
-    /// From a real answer on the wire: a throttle or a server error on the
-    /// first read of a kept profile ends the wait, after exactly that one read
-    /// (the loopback server answers once).
+    /// One poll's read in a kept profile: the answer, and the line `window` says to
+    /// print.
+    fn kept_read(
+        window: &Window,
+        status: &str,
+        content_type: &str,
+        body: &str,
+    ) -> (Confirm, Option<String>) {
+        let (base, server) = loopback(status, content_type, body);
+        let (answer, noted) = decide(&signed_in(), true, VALIDATION_PATH, || {
+            Sofi::with_base(&base)
+        });
+        server.join().expect("the loopback server ran");
+        (answer, window.record(noted))
+    }
+
+    /// From a real answer on the wire: a throttle or a server error in a kept profile
+    /// keeps the tab and the jar, and warns once.
     #[test]
-    fn a_kept_profile_stops_on_the_first_throttle_or_server_error() {
+    fn a_kept_profile_keeps_waiting_through_a_throttle_or_server_error() {
         for (status, named) in [
             ("429 Too Many Requests", "HTTP 429"),
             ("500 Internal Server Error", "HTTP 500"),
             ("503 Service Unavailable", "HTTP 503"),
         ] {
-            let (base, server) = loopback(status, "application/json", "");
-            let answer = confirm_with(&signed_in(), true, true, VALIDATION_PATH, || {
-                Sofi::with_base(&base)
-            });
-            server.join().expect("the loopback server ran");
-            assert_kept_read_fails(answer, named);
+            let window = Window::new(false);
+            let (answer, line) = kept_read(&window, status, "application/json", "");
+            assert_kept_read_waits(answer, named);
+            let line = line.expect("the first inconclusive read warns");
+            assert!(line.contains(named), "{line}");
+            assert!(line.contains("Ctrl-C"), "{line}");
+            let (answer, line) = kept_read(&window, status, "application/json", "");
+            assert_kept_read_waits(answer, named);
+            assert_eq!(line, None, "repeated polls stay silent");
+            assert_eq!(window.unverified(), None, "nothing is accepted");
         }
     }
 
-    /// A request with no answer at all ends the wait too.
+    /// A reason names the status, not the provider's message: the crate's reasons
+    /// hold no answer's body, and this one reaches stderr.
     #[test]
-    fn a_kept_profile_stops_on_a_transport_failure() {
+    fn an_inconclusive_reason_omits_the_providers_message() {
+        let body = r#"{"message":"dummy detail"}"#;
+        let window = Window::new(false);
+        let (answer, line) = kept_read(
+            &window,
+            "500 Internal Server Error",
+            "application/json",
+            body,
+        );
+        let line = line.expect("the first inconclusive read warns");
+        assert!(
+            line.contains("HTTP 500") && !line.contains("dummy detail"),
+            "{line}"
+        );
+        match answer {
+            Confirm::NotYet(reason) => {
+                assert!(
+                    reason.contains("HTTP 500") && !reason.contains("dummy detail"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected NotYet, got {other:?}"),
+        }
+    }
+
+    /// A request with no answer at all keeps the wait going too.
+    #[test]
+    fn a_kept_profile_keeps_waiting_through_a_transport_failure() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let base = format!("http://{}", listener.local_addr().unwrap());
         drop(listener);
-        let answer = confirm_with(&signed_in(), true, true, VALIDATION_PATH, || {
+        let (answer, noted) = decide(&signed_in(), true, VALIDATION_PATH, || {
             Sofi::with_base(&base)
         });
-        assert_kept_read_fails(answer, "inconclusive");
+        assert_kept_read_waits(answer, "inconclusive");
+        assert!(matches!(noted, Some(Noted::Inconclusive(_))), "{noted:?}");
+    }
+
+    /// `-q` suppresses the wait's line, and the wait is unchanged.
+    #[test]
+    fn a_quiet_kept_read_is_silent() {
+        let (answer, line) = kept_read(
+            &Window::new(true),
+            "503 Service Unavailable",
+            "application/json",
+            "",
+        );
+        assert_kept_read_waits(answer, "HTTP 503");
+        assert_eq!(line, None);
+    }
+
+    /// The hook's line is per window, however the answers mix.
+    #[test]
+    fn an_inconclusive_read_and_an_edge_block_share_one_line_per_window() {
+        let window = Window::new(false);
+        let (_, first) = kept_read(&window, "503 Service Unavailable", "application/json", "");
+        assert!(first.is_some());
+        let (_, second) = kept_read(&window, "403 Forbidden", "text/html", "<html></html>");
+        assert_eq!(second, None);
+    }
+
+    /// A scratch profile accepts on the cookie, recording why for the store.
+    #[test]
+    fn a_scratch_profile_records_why_it_accepted_unverified() {
+        let window = Window::new(true);
+        let (base, server) = loopback("503 Service Unavailable", "application/json", "");
+        let answer = confirm_with(&signed_in(), &window, false, VALIDATION_PATH, || {
+            Sofi::with_base(&base)
+        });
+        server.join().expect("the loopback server ran");
+        assert!(matches!(answer, Confirm::Ready), "{answer:?}");
+        let why = window.unverified().expect("the reason is recorded");
+        assert!(why.contains("HTTP 503"), "{why}");
+        assert_eq!(window.unverified(), None, "it is handed over once");
+    }
+
+    /// The stored session's state decides whether an unverified one may replace it.
+    #[test]
+    fn a_stored_session_is_read_once_to_learn_its_state() {
+        let stored = dummy_stored_session();
+        let state = |status: &str, content_type: &str, body: &str| {
+            let (base, server) = loopback(status, content_type, body);
+            let state =
+                stored_state_with(Some(&stored), VALIDATION_PATH, || Sofi::with_base(&base));
+            server.join().expect("the loopback server ran");
+            state
+        };
+        let accounts = include_str!("../tests/fixtures/accounts.json");
+        assert_eq!(
+            state("200 OK", "application/json", accounts),
+            StoredSession::Working
+        );
+        assert_eq!(
+            state("401 Unauthorized", "application/json", ""),
+            StoredSession::Dead
+        );
+        assert_eq!(
+            state("503 Service Unavailable", "application/json", ""),
+            StoredSession::Unknown
+        );
+        assert_eq!(
+            state("403 Forbidden", "text/html", "<html></html>"),
+            StoredSession::Unknown
+        );
+        assert_eq!(
+            state("200 OK", "application/json", "{}"),
+            StoredSession::Unknown
+        );
+
+        let no_read = || -> Result<Sofi, CliError> { panic!("nothing to read") };
+        assert_eq!(
+            stored_state_with(None, "/x", no_read),
+            StoredSession::Absent
+        );
+        assert_eq!(
+            stored_state_with(Some("not json"), "/x", no_read),
+            StoredSession::Dead
+        );
+    }
+
+    fn dummy_stored_session() -> String {
+        Session {
+            cookie: "SOFI=dummy-stored".into(),
+            csrf_token: None,
+            expires_at: None,
+            graphql_recipe: None,
+        }
+        .to_secret()
+        .expose()
+        .to_string()
+    }
+
+    /// An unverified session never replaces one that works or may work, and the
+    /// refusal names the way out.
+    #[test]
+    fn an_unverified_session_does_not_replace_a_working_one() {
+        assert!(refuse_replacing(&StoredSession::Absent, "why").is_ok());
+        assert!(refuse_replacing(&StoredSession::Dead, "why").is_ok());
+        for (stored, said) in [
+            (StoredSession::Working, "still works"),
+            (StoredSession::Unknown, "could not be checked"),
+        ] {
+            let err = refuse_replacing(&stored, "dummy why").unwrap_err();
+            assert_eq!(err.exit_code(), 2);
+            let text = err.to_string();
+            assert!(text.contains(said), "{text}");
+            assert!(text.contains("dummy why"), "{text}");
+            assert!(
+                text.contains("sfi auth login --browser --overwrite"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unverified_warning_names_the_cause_and_the_way_out() {
+        let line = unverified_warning("dummy why");
+        assert!(line.starts_with("warning: "), "{line}");
+        assert!(line.contains("stored unverified"), "{line}");
+        assert!(line.contains("dummy why"), "{line}");
+        assert!(
+            line.contains("sfi auth login --browser --overwrite"),
+            "{line}"
+        );
     }
 
     /// Every failure once Chrome may have used a kept profile carries the note
@@ -1290,9 +1641,13 @@ mod tests {
     /// than holding the tab open: the hook's only `Fail`.
     #[test]
     fn a_client_that_cannot_be_built_ends_the_wait() {
-        let answer = confirm_with(&signed_in(), true, false, VALIDATION_PATH, || {
-            Err(CliError::Other("dummy: no HTTP client".into()))
-        });
+        let answer = confirm_with(
+            &signed_in(),
+            &Window::new(true),
+            false,
+            VALIDATION_PATH,
+            || Err(CliError::Other("dummy: no HTTP client".into())),
+        );
         match answer {
             Confirm::Fail(e) => {
                 assert_eq!(e.exit_code(), 1);

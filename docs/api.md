@@ -54,8 +54,8 @@ plausible JSON login endpoint this repo first modeled, returns HTTP 404 live
 
 ### 2.2 `sfi auth login --browser` — the supported path — **LIVE-VERIFIED 2026-08-24**
 
-`--browser` reads only `--fresh-profile`. Beside `--stdin`, `--from-env`,
-`--code`, `--username`, `--no-verify`, `--overwrite`, `--non-interactive` or
+`--browser` reads only `--fresh-profile` and `--overwrite`. Beside `--stdin`,
+`--from-env`, `--code`, `--username`, `--no-verify`, `--non-interactive` or
 `--channel` it is exit 2 from clap, before anything reads the keychain or the
 network or opens Chrome.
 
@@ -65,38 +65,44 @@ answered ("2 accounts visible"). The mechanism is cli-common's
 `src/browser.rs` says what to read (`browser_capture`) and confirms it:
 
 1. Launch a real Chrome — `SFI_CHROME` overrides the binary search — at
-`https://login.sofi.com/u/login`, with `--remote-debugging-port=0`, the kept
-`0700` profile (below) and first-run suppression. No automation flags, so
-`navigator.webdriver` is `false` and the page looks like an ordinary browser to
-Cloudflare/ThreatMetrix. 2. The **owner signs in by hand** (password and the
-texted code). The CLI never drives the page, and never attaches to the
-`login.sofi.com` page at all, so the anti-bot stack sees a real human. 3. Every
-~3s the crate lists the pages and, once one is open on `www.sofi.com` (the app,
-where Auth0 redirects after sign-in), reads the browser's cookies with one
-`Storage.getCookies`. That call returns **HttpOnly** cookies (unlike page JS)
-and covers **every origin** the profile holds, so the `sofi.com` jar includes
-both `login.sofi.com` and `www.sofi.com` (§2.5). The `SOFI` bearer cookie (app
-origin, set only post-login) is the "signed in" gate; `Session::from_pairs`
-keeps the four session cookies (§2.4) and drops the rest. 4. From the moment a
-`www.sofi.com` page opens, the crate watches that page's requests for the app's
-first `/bff/graphql` request (§3.4). Once `SOFI` is set, if none has come yet,
-the tab is held open up to **25 s** for one. Only the header **names** and the
-name of the cookie the CSRF header is copied from are kept (`GraphqlRecipe`);
-with no request, the client uses the modeled header defaults and says so. 5.
-Before the tab closes, the session is validated with a mild read (§2.5): a
-refused answer keeps the tab open and asks again on the next poll, and a timeout
-gives the refusal's own text. A 403 or a challenge's HTML page names itself as a
-possible bot check or edge block, not an expired session; the text holds a
-status and a URL without its query, never a cookie value or the page. The first
-such block in a window also prints one warning on stderr, unless `-q`, saying
-the owner can press Ctrl-C rather than wait out the timeout; the wait goes on,
-since the window can still clear. A 401 or a plain 403 prints nothing, because a
-stale cookie in a kept profile answers that way before the owner has signed in.
-On success the tab closes, Chrome quits, and the session goes to the keychain
-(`session`). A timeout after **10 minutes** (exit 3) says what was missing: no
-`www.sofi.com` page, the `SOFI` cookie, or the validation read, and, once the
-jar was read, its cookie names (never a value). Closing the window is exit 3
-too; Ctrl-C cancels (exit 1).
+   `https://login.sofi.com/u/login`, with `--remote-debugging-port=0`, the kept
+   `0700` profile (below) and first-run suppression. No automation flags, so
+   `navigator.webdriver` is `false` and the page looks like an ordinary
+   browser to Cloudflare/ThreatMetrix.
+2. The **owner signs in by hand** (password and the texted code). The CLI
+   never drives the page, and never attaches to the `login.sofi.com` page at
+   all, so the anti-bot stack sees a real human.
+3. Every ~3s the crate lists the pages and, once one is open on
+   `www.sofi.com` (the app, where Auth0 redirects after sign-in), reads the
+   browser's cookies with one `Storage.getCookies`. That call returns
+   **HttpOnly** cookies (unlike page JS) and covers **every origin** the
+   profile holds, so the `sofi.com` jar includes both `login.sofi.com` and
+   `www.sofi.com` (§2.5). The `SOFI` bearer cookie (app origin, set only
+   post-login) is the "signed in" gate; `Session::from_pairs` keeps the four
+   session cookies (§2.4) and drops the rest.
+4. From the moment a `www.sofi.com` page opens, the crate watches that page's
+   requests for the app's first `/bff/graphql` request (§3.4). Once `SOFI` is
+   set, if none has come yet, the tab is held open up to **25 s** for one.
+   Only the header **names** and the name of the cookie the CSRF header is
+   copied from are kept (`GraphqlRecipe`); with no request, the client uses
+   the modeled header defaults and says so.
+5. Before the tab closes, the session is validated with a mild read (§2.5):
+   a refused answer keeps the tab open and asks again on the next poll, and a
+   timeout gives the refusal's own text. A 403, 429 or 503 HTML page, or a page
+   titled as a challenge, names itself as a possible bot check or edge block,
+   not an expired session. The text holds a status and a URL without its query,
+   never a cookie value or the page.
+   On success the tab closes, Chrome quits, and the session goes to the
+   keychain (`session`). A timeout after **10 minutes** (exit 3) says what was
+   missing: no `www.sofi.com` page, the `SOFI` cookie, or the validation read,
+   and, once the jar was read, its cookie names (never a value). Closing the
+   window is exit 3 too; Ctrl-C cancels (exit 1).
+
+   The first edge block or inconclusive read in a window also prints one
+   warning on stderr, unless `-q`, saying Ctrl-C ends the wait. The wait goes
+   on, since the window can still clear. A 401 or a plain 403 prints nothing,
+   because a stale cookie in a kept profile answers that way before the owner
+   has signed in.
 
 **The kept profile.** Chrome runs in `<data dir>/piekstra.sfi/browser-profile`,
 which stays on disk, so SoFi's own cookies (its remembered device, the Auth0
@@ -163,19 +169,35 @@ itself UNVERIFIED-LIVE, so the path is overridable with `SFI_VALIDATE_PATH`.
 The classification (`browser::probe_outcome`, pure/tested):
 
 - a JSON read holding data (a non-empty object or array) → **accept**;
-- HTML / a login redirect / 401 → **keep waiting** (not signed in yet; the tab
-  stays open and the read is retried on the next poll);
+- HTML / a login redirect / 401 / 403 → **keep waiting** (not signed in yet, or
+  a bot check in the way; the tab stays open and the read is retried on the next
+  poll);
 - **404** (the default endpoint doesn't exist), another transient error, or a
-  200 with no data (empty, `null`, `{}`, `[]`), in a **scratch profile** (`--fresh-profile`) → **accept on the `SOFI` bearer
-  cookie**, with a note, so an unverified validation endpoint can't block a
-  genuine login. That profile started empty, so the cookie is this sign-in's.
-  After sign-in, live-probe the real read (`sfi api GET <path>`) and, if useful,
-  set `SFI_VALIDATE_PATH`.
-- the same answer in the **kept profile** → **end the wait on the first one**
-  (exit 5): the cookie may be left from an earlier sign-in, so it proves nothing
-  without a working read, and polling every 3 s would keep calling an API that
-  may be throttling this client. The error names the answer and says to retry or
-  use `--fresh-profile`.
+  200 with no data (empty, `null`, `{}`, `[]`), in a **scratch profile**
+  (`--fresh-profile`) → **accept on the `SOFI` bearer cookie**, unverified, so an
+  unverified validation endpoint can't block a genuine login. That profile
+  started empty, so the cookie is this sign-in's. After sign-in, live-probe the
+  real read (`sfi api GET <path>`) and, if useful, set `SFI_VALIDATE_PATH`.
+- a transient error or a 200 with no data in the **kept profile** → **keep
+  waiting**, with the read's own reason, and read again on the next poll: the
+  cookie may be left from an earlier sign-in, so it proves nothing without a
+  working read, and it does not survive the stop, so ending the wait could lose a
+  finished sign-in (cli-common DESIGN.md §2.2). The first one warns on stderr.
+- a **404** in the **kept profile** → **end the wait** (exit 5), since no later
+  poll can change it. The error names it and says to fix it, retry or use
+  `--fresh-profile`.
+
+`sfi auth login --json` prints an `auth-status/v1` result on stdout, on every path
+that stores a session, with `verified` always a boolean: `true` when a read
+accepted the session, `false` otherwise. Only this scratch-profile acceptance
+gives `false`.
+
+A session accepted unverified warns on stderr even under `-q`, naming the cause
+and `sfi auth login --browser --overwrite`. It never
+replaces a stored session that works or that one read could not check, unless
+`--overwrite` is given: that is exit 2, and the stored one stays. A stored
+session that can't be read, has expired or is refused (a plain 403 included) is
+replaced. A verified session always replaces what is stored.
 
 ### 2.6 The live 404 — recorded 2026-08-24
 
@@ -365,11 +387,11 @@ yet surfaced by a command — reachable via `sfi api GET
 
 | Situation | `CliError` | Exit |
 |---|---|---|
-| HTML where JSON expected (lapsed session / Cloudflare) | `Auth` | 3 |
+| HTML where JSON expected (lapsed session, or a possible bot check / edge block on a 403, 429 or 503 or a page titled as a challenge) | `Auth` | 3 |
 | GraphQL `errors` with an auth/session message | `Auth` | 3 |
-| `401`/`403` | `Auth` | 3 |
+| `401`; a `403` without an HTML page, which names both causes | `Auth` | 3 |
 | `404` | `NotFound` | 4 |
-| `429` / other 5xx / GraphQL error | `Upstream` | 5 |
+| `429` / other 5xx without an HTML page / GraphQL error | `Upstream` | 5 |
 | Download not a `%PDF` | `Upstream` (verify) | 5 |
 
 ## 5. Terms of service — an honest reading

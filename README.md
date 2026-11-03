@@ -61,9 +61,7 @@ session is read; then Chrome quits. Ctrl-C cancels and stops Chrome. Nothing
 drives the page: you log in by hand, which is what keeps the anti-bot checks
 happy. The window and the capture come from cli-common's `pk-cli-browser`,
 shared across the CLI family. It needs Google Chrome (or set `SFI_CHROME` to a
-Chrome/Chromium/Edge binary). `--browser` takes no other login flag but
-`--fresh-profile`: beside any other it is a usage error (exit 2) that names the
-flag.
+Chrome/Chromium/Edge binary). `--browser` takes no other login flag but `--fresh-profile` and `--overwrite`: beside any other it is a usage error (exit 2) that names the flag.
 
 **The profile is kept.** Chrome runs in a profile `sfi` keeps on disk, owner-only
 (`0700`), at `~/Library/Application Support/piekstra.sfi/browser-profile` on

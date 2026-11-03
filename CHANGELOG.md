@@ -3,17 +3,32 @@
 ## v0.3.3 — 2026-11-03
 
 - A `sfi auth login --browser` that times out now says what the validation read
-  was told, where it used to say only "answered as signed out". A 403 or a
-  challenge's HTML page names itself as a possible bot check or edge block, and
-  says to wait, since a sign-in now may hit the same block. Reads outside a
-  sign-in use the same wording. Exit codes are unchanged. The text holds a
-  status and a URL without its query, never a cookie value or the page. The
-  first such block in a window also prints one warning on stderr, unless `-q`,
-  saying you can press Ctrl-C rather than wait out the timeout. A 401 or a plain
-  403 prints nothing.
-- `sfi auth login --help` no longer offers `--no-verify` or `--overwrite`, which
-  no login path reads. Both still parse without `--browser`, so a script that
-  passes one does not break. `auth set-credential --overwrite` is unchanged.
+  was told, where it used to say only "answered as signed out". A 403, 429 or 503
+  HTML page, or a page titled as a challenge, names itself as a possible bot check
+  or edge block, and says to wait, since a sign-in now may hit the same block. A
+  403 without an HTML page names both causes. Reads outside a sign-in use the same
+  wording. Exit codes are unchanged. The text holds a status and a URL without its
+  query, never a cookie value or the page.
+- In the kept profile, an inconclusive validation read (a 429, a 5xx, a dropped
+  connection, an empty or unparseable answer) no longer ends the sign-in with exit
+  5. It keeps the window and reads again on the next poll, since the session cookie
+  does not survive the stop and ending the wait could lose a finished sign-in. A
+  404 there still ends it, since no later poll can change that.
+- The first edge block or inconclusive read in a window prints one warning on
+  stderr, unless `-q`, saying you can press Ctrl-C. A 401 or a plain 403 prints
+  nothing.
+- A `--fresh-profile` sign-in stored on an inconclusive read now warns even under
+  `-q`, naming the cause and `sfi auth login --browser --overwrite`. It no longer
+  replaces a stored session that works or could not be checked unless `--overwrite`
+  is given: that is exit 2, and the stored one stays.
+- `sfi auth login --json` used to run and print nothing on stdout. It now prints an
+  `auth-status/v1` result on every path that stores a session, with `verified`
+  always a boolean: `true` when a read accepted the session, `false` otherwise.
+- `--browser --overwrite` parses again, since v0.3.2 refused it, and now has the
+  effect above. `--overwrite` alone still does nothing.
+- `sfi auth login --help` no longer offers `--no-verify`, which no login path
+  reads. It still parses without `--browser`, so a script that passes it does not
+  break.
 
 ## v0.3.2 — 2026-11-03
 

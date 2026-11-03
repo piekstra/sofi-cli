@@ -530,6 +530,16 @@ impl Sofi {
         url: &str,
         query: &[(&str, String)],
     ) -> Result<Value, CliError> {
+        self.read(session, url, query).map_err(CliError::from)
+    }
+
+    /// [`Sofi::get`], saying whether an edge block answered.
+    pub fn read(
+        &self,
+        session: &Session,
+        url: &str,
+        query: &[(&str, String)],
+    ) -> Result<Value, ReadError> {
         self.pace();
         let resp = self
             .http
@@ -907,7 +917,7 @@ fn classify_and_parse(status: u16, url: &str, text: &str) -> Result<Value, CliEr
 
 /// Map a response onto the exit-code contract, treating HTML as an auth
 /// failure rather than trusting the status code.
-pub fn json_response(resp: reqwest::blocking::Response) -> Result<Value, CliError> {
+pub fn json_response(resp: reqwest::blocking::Response) -> Result<Value, ReadError> {
     let (status, url, text) = response_parts(resp)?;
 
     // A lapsed session — or a Cloudflare interstitial — frequently comes back
@@ -915,15 +925,20 @@ pub fn json_response(resp: reqwest::blocking::Response) -> Result<Value, CliErro
     // and this body-shaped check runs before the status ladder.
     if looks_like_html(&text) {
         if matches!(status, 403 | 429 | 503) || html_reads_as_edge_block(&text) {
-            return Err(edge_block(status));
+            return Err(ReadError::EdgeBlock { status });
         }
-        return Err(CliError::Auth(format!(
+        return Err(ReadError::Failed(CliError::Auth(format!(
             "expected JSON from {} but got an HTML page (HTTP {status}) — the session has \
              probably lapsed (or Cloudflare is challenging this client); run `sfi auth login`",
             without_query(&url)
-        )));
+        ))));
     }
-    classify_and_parse(status, &url, &text)
+    classify_and_parse(status, &url, &text).map_err(|e| match e {
+        CliError::Upstream(_) if !(200..300).contains(&status) => {
+            ReadError::Status { status, error: e }
+        }
+        e => ReadError::Failed(e),
+    })
 }
 
 fn parse_json(text: &str, status: u16) -> Result<Value, CliError> {
@@ -954,13 +969,36 @@ fn without_query(url: &str) -> &str {
     url.split(['?', '#']).next().unwrap_or(url)
 }
 
-/// The words only [`edge_block`] uses, so a sign-in's hook can tell that refusal from
-/// the others, which all arrive as the same `Auth`.
-pub const EDGE_BLOCK: &str = "possibly a bot check or edge block";
+/// Why a read returned no data, typed where a caller acts on the kind: a sign-in's
+/// hook warns on an edge block, and everything else is the family's `CliError`.
+#[derive(Debug)]
+pub enum ReadError {
+    /// A bot check or an edge block's HTML page (exit 3, as any refusal is).
+    EdgeBlock {
+        status: u16,
+    },
+    /// A throttle or a server error. Its text may hold the provider's own message,
+    /// so a hook's reason names only the status.
+    Status {
+        status: u16,
+        error: CliError,
+    },
+    Failed(CliError),
+}
 
-/// Whether a refusal's text is [`edge_block`]'s.
-pub fn names_an_edge_block(refusal: &str) -> bool {
-    refusal.contains(EDGE_BLOCK)
+impl From<CliError> for ReadError {
+    fn from(e: CliError) -> Self {
+        ReadError::Failed(e)
+    }
+}
+
+impl From<ReadError> for CliError {
+    fn from(e: ReadError) -> Self {
+        match e {
+            ReadError::EdgeBlock { status } => edge_block(status),
+            ReadError::Status { error, .. } | ReadError::Failed(error) => error,
+        }
+    }
 }
 
 /// An HTML page from the edge where data was expected: a possible bot check, which
@@ -968,25 +1006,31 @@ pub fn names_an_edge_block(refusal: &str) -> bool {
 /// as an expired session. It names the status only, never the page.
 fn edge_block(status: u16) -> CliError {
     CliError::Auth(format!(
-        "SoFi answered with an HTML page (HTTP {status}): {EDGE_BLOCK}, not an expired \
-         session. Wait before signing in again, since a retry now may \
+        "SoFi answered with an HTML page (HTTP {status}): possibly a bot check or edge block, \
+         not an expired session. Wait before signing in again, since a retry now may \
          hit the same block; then run `sfi auth login --browser`"
     ))
 }
 
 /// Whether an HTML page reads as a bot check or an edge block rather than a login
-/// page: a challenge's own wording, in the head of the page. Not a login page's
-/// reCAPTCHA or Turnstile, which every sign-in shows.
+/// page: a challenge's own wording, in the `<title>`, which must open in the first
+/// 8 KiB. Only the title counts, since a login page's body or scripts may hold the
+/// same words, and so may its own reCAPTCHA or Turnstile.
 fn html_reads_as_edge_block(text: &str) -> bool {
     let head = String::from_utf8_lossy(&text.as_bytes()[..text.len().min(8192)]).to_lowercase();
-    [
-        "just a moment",
-        "attention required",
-        "cf-chl",
-        "access denied",
-    ]
-    .iter()
-    .any(|marker| head.contains(marker))
+    let Some(open) = head.find("<title") else {
+        return false;
+    };
+    let Some(start) = head[open..].find('>') else {
+        return false;
+    };
+    let title = head[open + start + 1..]
+        .split("</title")
+        .next()
+        .unwrap_or_default();
+    ["just a moment", "attention required", "access denied"]
+        .iter()
+        .any(|marker| title.contains(marker))
 }
 
 /// A throttle is upstream (exit 5), and waiting is the actionable part.
@@ -1388,37 +1432,216 @@ mod tests {
         assert!(msg.contains("auth login --browser"));
     }
 
-    /// The status ladder has exactly one definition; pin the whole contract so
-    /// a re-pin or a live-capture fix can't silently reshuffle exit codes.
-    /// A challenge page names itself; a login page does not, though it carries a
-    /// bot check of its own. A URL in a message drops what could be a value.
+    /// Each challenge's title names itself, whatever its case.
     #[test]
-    fn an_edge_block_page_reads_differently_from_a_login_page() {
-        for page in [
-            "<!DOCTYPE html><html><title>Just a moment...</title></html>",
-            "<html><title>Attention Required! | Cloudflare</title></html>",
-            "<html><script src=\"/cdn-cgi/challenge-platform/cf-chl\"></script></html>",
+    fn each_challenge_title_reads_as_an_edge_block() {
+        for title in [
+            "Just a moment...",
+            "JUST A MOMENT",
+            "Attention Required! | Cloudflare",
+            "Access denied",
         ] {
-            assert!(html_reads_as_edge_block(page), "{page}");
+            let page = format!("<!DOCTYPE html><html><head><title>{title}</title></head></html>");
+            assert!(html_reads_as_edge_block(&page), "{title}");
         }
-        for page in [
-            "<!DOCTYPE html><html>Sign in</html>",
-            "<html><div class=\"g-recaptcha\"></div></html>",
-            "<html><script src=\"https://challenges.cloudflare.com/turnstile\"></script></html>",
+        assert!(html_reads_as_edge_block(
+            "<html><title data-x=\"1\">Just a moment</title></html>"
+        ));
+    }
+
+    /// A login page may hold a challenge's words, in its body, a script or a meta tag,
+    /// and its own bot check. Only the title counts, so none of it reads as a block.
+    #[test]
+    fn a_login_page_holding_challenge_words_is_not_an_edge_block() {
+        let page = include_str!("../tests/fixtures/login-page-with-challenge-words.html");
+        for word in [
+            "access denied",
+            "cf-chl",
+            "just a moment",
+            "attention required",
         ] {
-            assert!(!html_reads_as_edge_block(page), "{page}");
+            assert!(
+                page.to_lowercase().contains(word),
+                "the fixture holds {word}"
+            );
         }
+        assert!(!html_reads_as_edge_block(page));
+        assert!(!html_reads_as_edge_block(
+            "<html>access denied, cf-chl</html>"
+        ));
+        assert!(!html_reads_as_edge_block("<html><title"));
+    }
+
+    /// A title that opens past the first 8 KiB is not read.
+    #[test]
+    fn a_challenge_title_past_the_window_is_not_read() {
+        let padding = " ".repeat(8192);
+        let page = format!("<html>{padding}<title>Just a moment...</title></html>");
+        assert!(!html_reads_as_edge_block(&page));
+        // A multi-byte character across the cut does not panic.
+        let page = format!("<html>{}é<title>Just a moment</title>", "a".repeat(8185));
+        assert!(!html_reads_as_edge_block(&page));
+    }
+
+    #[test]
+    fn an_edge_block_names_itself_and_keeps_the_refusal_exit_code() {
         let message = edge_block(403).to_string();
-        assert!(message.contains("bot check"), "{message}");
+        assert!(
+            message.contains("possibly a bot check or edge block"),
+            "{message}"
+        );
         assert!(message.contains("not an expired session"), "{message}");
         assert_eq!(edge_block(403).exit_code(), 3);
-
+        assert_eq!(
+            CliError::from(ReadError::EdgeBlock { status: 503 }).exit_code(),
+            3
+        );
         assert_eq!(
             without_query("https://login.example.com/u/login?state=dummy#frag"),
             "https://login.example.com/u/login"
         );
     }
 
+    /// A 403 that is not HTML names both causes, and stays exit 3.
+    #[test]
+    fn a_403_that_is_not_html_names_both_causes() {
+        let err = classify_status(403, "https://x/y", &Value::Null).unwrap();
+        assert_eq!(err.exit_code(), 3);
+        let text = err.to_string();
+        assert!(text.contains("the session may be invalid"), "{text}");
+        assert!(text.contains("may be a bot check or edge block"), "{text}");
+        assert!(!text.contains("possibly a bot check"), "{text}");
+        let err = classify_status(401, "https://x/y", &Value::Null).unwrap();
+        assert!(!err.to_string().contains("bot check"), "{err}");
+    }
+
+    /// A PDF's URL may be pre-signed and a redirect's may carry a state value, so an
+    /// HTML answer's message drops the query.
+    #[test]
+    fn document_auth_failure_omits_the_query() {
+        let err = document_auth_failure(
+            b"<html>Sign in</html>",
+            "https://login.example.com/u/login?state=dummy-state#frag",
+        )
+        .unwrap();
+        let text = err.to_string();
+        assert!(text.contains("https://login.example.com/u/login"), "{text}");
+        assert!(!text.contains("dummy-state"), "{text}");
+        assert!(!text.contains("frag"), "{text}");
+    }
+
+    /// A loopback server that gives one answer, and the client pointed at it.
+    fn client_answering(
+        status: &'static str,
+        body: &'static str,
+    ) -> (Sofi, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let client = Sofi::with_base(format!("http://127.0.0.1:{port}")).expect("client builds");
+        (client, handle)
+    }
+
+    fn dummy_session() -> Session {
+        Session {
+            cookie: "SOFI=dummy".into(),
+            csrf_token: None,
+            expires_at: None,
+            graphql_recipe: None,
+        }
+    }
+
+    /// An HTML page behind a 403, a 429 or a 503 on a read is an edge block, typed
+    /// for the hook and worded for everyone else, as is a challenge's page behind a
+    /// 200. An ordinary login page behind a 200 is not.
+    #[test]
+    fn a_read_types_an_html_edge_block() {
+        for (status, code, page) in [
+            ("403 Forbidden", 403, "<html></html>"),
+            ("429 Too Many Requests", 429, "<html></html>"),
+            ("503 Service Unavailable", 503, "<html></html>"),
+            (
+                "200 OK",
+                200,
+                "<html><title>Just a moment...</title></html>",
+            ),
+        ] {
+            let (client, server) = client_answering(status, page);
+            let err = client
+                .read(&dummy_session(), &client.url("/x"), &[])
+                .unwrap_err();
+            server.join().unwrap();
+            assert!(
+                matches!(err, ReadError::EdgeBlock { status } if status == code),
+                "{status}: {err:?}"
+            );
+            let err = CliError::from(err);
+            assert_eq!(err.exit_code(), 3, "{status}");
+            assert!(err.to_string().contains("bot check"), "{status}: {err}");
+        }
+
+        let (client, server) = client_answering("200 OK", "<html>Sign in</html>");
+        let err = client
+            .get(&dummy_session(), &client.url("/x"), &[])
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(err.exit_code(), 3);
+        assert!(err.to_string().contains("probably lapsed"), "{err}");
+    }
+
+    /// A status the ladder calls upstream keeps its full text for a command and
+    /// types the status, so the provider's message need not reach a hook's reason.
+    #[test]
+    fn a_read_types_a_server_error() {
+        let (client, server) =
+            client_answering("500 Internal Server Error", r#"{"message":"dummy detail"}"#);
+        let err = client
+            .read(&dummy_session(), &client.url("/x"), &[])
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            matches!(err, ReadError::Status { status: 500, .. }),
+            "{err:?}"
+        );
+        let err = CliError::from(err);
+        assert_eq!(err.exit_code(), 5);
+        assert!(err.to_string().contains("dummy detail"), "{err}");
+    }
+
+    /// GraphQL's HTML branch makes the same call: a 403 or a challenge's page is an
+    /// edge block, not a lapsed session.
+    #[test]
+    fn graphql_maps_a_403_html_page_to_an_edge_block() {
+        for (status, page) in [
+            ("403 Forbidden", "<html></html>"),
+            ("200 OK", "<html><title>Attention Required!</title></html>"),
+        ] {
+            let (client, server) = client_answering(status, page);
+            let err = client
+                .graphql(&dummy_session(), "op", "query", serde_json::json!({}))
+                .unwrap_err();
+            server.join().unwrap();
+            assert_eq!(err.exit_code(), 3, "{status}");
+            let text = err.to_string();
+            assert!(text.contains("possibly a bot check"), "{status}: {text}");
+            assert!(!text.contains("lapsed"), "{status}: {text}");
+        }
+    }
+
+    /// The status ladder has exactly one definition; pin the whole contract so
+    /// a re-pin or a live-capture fix can't silently reshuffle exit codes.
     #[test]
     fn classify_status_pins_the_exit_code_contract() {
         let url = "https://www.sofi.com/x";
