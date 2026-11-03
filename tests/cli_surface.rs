@@ -339,3 +339,17 @@ fn completions_generate_for_each_shell() {
             .stdout(predicates::str::is_empty().not());
     }
 }
+
+/// no-color.org: any non-empty `NO_COLOR` turns color off. cli-common before
+/// v0.15.1 parsed it as a clap bool, so `NO_COLOR=1` failed every command with
+/// a usage error.
+#[test]
+fn no_color_in_the_environment_never_fails_a_command() {
+    for v in ["1", "true", "0", ""] {
+        isolated("no-color")
+            .env("NO_COLOR", v)
+            .args(["completions", "bash"])
+            .assert()
+            .success();
+    }
+}
