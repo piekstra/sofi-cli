@@ -9,7 +9,7 @@ Built on cli-common v0.20.0.
   as signed out". Still exit 3.
 - A read that can't decide no longer ends a kept-profile sign-in or, for an edge
   block, reads as a dead session. That is a 429, a 5xx, a dropped connection, an
-  edge block's page (an HTML 403, 429 or 503, or a page titled as a challenge), or a
+  edge block's page (an HTML 403, 429 or 5xx, or a page titled as a challenge), or a
   2xx that is empty or not JSON. The window stays open, since the session cookie
   does not survive the stop, and cli-common asks again after a backoff of 6 s,
   doubling to 60 s, or longer if SoFi's `Retry-After` asks. Its first such answer
@@ -32,10 +32,12 @@ Built on cli-common v0.20.0.
   boolean: `true` when a read showed an account, `false` otherwise.
 - `--browser --overwrite` parses again, since v0.3.2 refused it, and now has the
   effect above. `--overwrite` alone still does nothing.
-- Outside a sign-in, an HTML page on a 403, 429 or 503, or a page titled as a
-  challenge, names itself as a possible bot check or edge block (exit 3): a new
-  sign-in may not clear it, so wait or try another network. A 403 without an HTML
-  page names both causes. Exit codes are unchanged. The text holds a status and a
+- Outside a sign-in, an HTML page on a 403, 429 or 5xx, or a page titled as a
+  challenge, names itself as a possible bot check or edge block: a new sign-in may
+  not clear it, so wait or try another network. A 403 without an HTML page names
+  both causes. An HTML 429 or 5xx used to read as a lapsed session or a block at
+  exit 3, and is now exit 5, as any other 429 or 5xx is. The GraphQL BFF follows the
+  same rule. Other exit codes are unchanged. The text holds a status and a
   URL without its query, never a cookie value or the page.
 - `sfi auth login --help` no longer offers `--no-verify`, which no login path
   reads. It still parses without `--browser`, so a script that passes it does not

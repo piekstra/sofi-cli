@@ -440,7 +440,13 @@ fn stored_state_with(
         }) => StoredSession::Dead,
         // An edge block, a plain 403 or a read that could not decide says nothing
         // about the stored session.
-        _ => StoredSession::CantTell,
+        Ok(Probe::Undecided { .. })
+        | Ok(Probe::NoSuchPath(_))
+        | Ok(Probe::NotYet {
+            may_be_a_block: true,
+            ..
+        })
+        | Err(_) => StoredSession::CantTell,
     }
 }
 
@@ -1312,7 +1318,7 @@ mod tests {
             "text/html",
             "<html></html>",
             "HTTP 502",
-            false,
+            true,
         ),
         (
             "403 Forbidden",

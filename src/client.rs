@@ -628,7 +628,7 @@ impl Sofi {
 
         // A lapsed session / Cloudflare interstitial is HTML, not JSON.
         if looks_like_html(&text) {
-            if status == 403 || html_reads_as_edge_block(&text) {
+            if html_is_edge_block(status, &text) {
                 return Err(edge_block(status));
             }
             return Err(CliError::Auth(format!(
@@ -926,7 +926,7 @@ pub fn json_response(resp: reqwest::blocking::Response) -> Result<Value, ReadErr
     // as an HTML page with a 200, not a 401. So shape, not status, decides,
     // and this body-shaped check runs before the status ladder.
     let judged = if looks_like_html(&text) {
-        if matches!(status, 403 | 429 | 503) || html_reads_as_edge_block(&text) {
+        if html_is_edge_block(status, &text) {
             return Err(ReadError::EdgeBlock {
                 status,
                 retry_after,
@@ -1036,12 +1036,25 @@ impl From<ReadError> for CliError {
 /// a fresh sign-in may run straight into. Exit 3, as any refusal is, but not worded
 /// as an expired session. It names the status only, never the page.
 fn edge_block(status: u16) -> CliError {
-    CliError::Auth(format!(
+    let message = format!(
         "SoFi answered with an HTML page (HTTP {status}): possibly a bot check or edge block, \
          not an expired session. A new sign-in may not clear it, because the block is on the \
          client rather than the session. Wait or try another network, then run `sfi auth login \
          --browser`"
-    ))
+    );
+    // A throttle or an outage is exit 5, retry later, on any body.
+    if matches!(status, 429 | 500..=599) {
+        CliError::Upstream(message)
+    } else {
+        CliError::Auth(message)
+    }
+}
+
+/// Whether an HTML answer is an edge block rather than a lapsed session's login
+/// page. The one test for every read, so no call site can send the owner to sign
+/// in again into the same block.
+fn html_is_edge_block(status: u16, text: &str) -> bool {
+    matches!(status, 403 | 429 | 500..=599) || html_reads_as_edge_block(text)
 }
 
 /// Whether an HTML page reads as a bot check or an edge block rather than a login
@@ -1516,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edge_block_names_itself_and_keeps_the_refusal_exit_code() {
+    fn an_edge_block_names_itself_and_keeps_its_exit_code() {
         let message = edge_block(403).to_string();
         assert!(
             message.contains("possibly a bot check or edge block"),
@@ -1530,7 +1543,7 @@ mod tests {
                 retry_after: None
             })
             .exit_code(),
-            3
+            5
         );
         assert_eq!(
             without_query("https://login.example.com/u/login?state=dummy#frag"),
@@ -1599,15 +1612,17 @@ mod tests {
         }
     }
 
-    /// An HTML page behind a 403, a 429 or a 503 on a read is an edge block, typed
+    /// An HTML page behind a 403, a 429 or a 5xx on a read is an edge block, typed
     /// for the hook and worded for everyone else, as is a challenge's page behind a
-    /// 200. An ordinary login page behind a 200 is not.
+    /// 200. An ordinary login page behind a 200 is not. A throttle or an outage is
+    /// exit 5 on any body.
     #[test]
     fn a_read_types_an_html_edge_block() {
         for (status, code, page) in [
             ("403 Forbidden", 403, "<html></html>"),
             ("429 Too Many Requests", 429, "<html></html>"),
             ("503 Service Unavailable", 503, "<html></html>"),
+            ("502 Bad Gateway", 502, "<html></html>"),
             (
                 "200 OK",
                 200,
@@ -1624,7 +1639,12 @@ mod tests {
                 "{status}: {err:?}"
             );
             let err = CliError::from(err);
-            assert_eq!(err.exit_code(), 3, "{status}");
+            let exit = if matches!(code, 429 | 500..=599) {
+                5
+            } else {
+                3
+            };
+            assert_eq!(err.exit_code(), exit, "{status}");
             assert!(err.to_string().contains("bot check"), "{status}: {err}");
         }
 
@@ -1660,16 +1680,23 @@ mod tests {
     /// edge block, not a lapsed session.
     #[test]
     fn graphql_maps_a_403_html_page_to_an_edge_block() {
-        for (status, page) in [
-            ("403 Forbidden", "<html></html>"),
-            ("200 OK", "<html><title>Attention Required!</title></html>"),
+        for (status, page, exit) in [
+            ("403 Forbidden", "<html></html>", 3),
+            (
+                "200 OK",
+                "<html><title>Attention Required!</title></html>",
+                3,
+            ),
+            ("429 Too Many Requests", "<html></html>", 5),
+            ("503 Service Unavailable", "<html></html>", 5),
+            ("502 Bad Gateway", "<html></html>", 5),
         ] {
             let (client, server) = client_answering(status, page);
             let err = client
                 .graphql(&dummy_session(), "op", "query", serde_json::json!({}))
                 .unwrap_err();
             server.join().unwrap();
-            assert_eq!(err.exit_code(), 3, "{status}");
+            assert_eq!(err.exit_code(), exit, "{status}");
             let text = err.to_string();
             assert!(text.contains("possibly a bot check"), "{status}: {text}");
             assert!(!text.contains("lapsed"), "{status}: {text}");

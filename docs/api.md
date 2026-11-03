@@ -174,7 +174,7 @@ The classification (`browser::probe_outcome`, pure/tested):
   HTML page / another 4xx / a parseable answer with no account → **keep waiting**,
   in both profiles (`Confirm::NotYet`: not signed in yet, or a provider's refusal);
 - a **read that can't decide**: a 429, a 5xx, no answer, an edge block's page (an
-  HTML 403, 429 or 503, or a page titled as a challenge), or a 2xx that is empty or
+  HTML 403, 429 or 5xx, or a page titled as a challenge), or a 2xx that is empty or
   not JSON. A literal `null` reads as empty.
   - In the **kept profile** → `Confirm::Undecided`, with the provider's
     `Retry-After` when it sent one. The cookie may be left from an earlier sign-in,
@@ -398,7 +398,7 @@ yet surfaced by a command — reachable via `sfi api GET
 
 | Situation | `CliError` | Exit |
 |---|---|---|
-| HTML where JSON expected (lapsed session, or a possible bot check / edge block on a 403, 429 or 503 or a page titled as a challenge) | `Auth` | 3 |
+| HTML where JSON expected (lapsed session, or a possible bot check / edge block on a 403, 429 or 5xx or a page titled as a challenge) | `Auth` | 3 |
 | GraphQL `errors` with an auth/session message | `Auth` | 3 |
 | `401`; a `403` without an HTML page, which names both causes | `Auth` | 3 |
 | `404` | `NotFound` | 4 |
