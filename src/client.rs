@@ -876,7 +876,11 @@ pub fn classify_status(status: u16, url: &str, detail: &Value) -> Option<CliErro
              --browser`"
                 .into(),
         )),
-        404 => Some(CliError::NotFound(format!("HTTP 404 from {url}"))),
+        // A query can hold an account id, and a document's link can be signed by its query.
+        404 => Some(CliError::NotFound(format!(
+            "HTTP 404 from {}",
+            url.split(['?', '#']).next().unwrap_or_default()
+        ))),
         s if !(200..300).contains(&s) => Some(CliError::Upstream(format!(
             "SoFi returned HTTP {s}{}",
             detail_suffix(detail)
@@ -1604,6 +1608,15 @@ mod tests {
             without_query("https://login.example.com/u/login?state=dummy#frag"),
             "https://login.example.com/u/login"
         );
+    }
+
+    #[test]
+    fn a_404_names_the_url_without_its_query() {
+        let err =
+            classify_status(404, "https://x/y?accountId=dummy&sig=dummy", &Value::Null).unwrap();
+        assert_eq!(err.exit_code(), 4, "{err}");
+        assert!(err.to_string().contains("https://x/y"), "{err}");
+        assert!(!err.to_string().contains("dummy"), "{err}");
     }
 
     /// A 403 that is not HTML names both causes, and stays exit 3.

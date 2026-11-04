@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "sfi",
   "display_name": "SoFi (sfi)",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Read-only access to your own SoFi Checking & Savings balances, transactions, interest and statements, through the open-source sfi CLI.",
   "long_description": "Ask Claude about your SoFi Checking & Savings: what each account holds and their total, what you spent and received over a period, how much interest a year paid (the 1099-INT figure), and which monthly statements exist. Four read-only tools, sofi_balances, sofi_transactions, sofi_interest and sofi_documents; nothing can move money or change your account. The extension asks for no password: SoFi sign-in is through a browser, so first install the sfi CLI and run `sfi auth login --browser` in a terminal. That stores the session in your OS keychain, and the bundled sfi reads it from there. On macOS the first call asks for keychain access; choose Always Allow. Unofficial; not affiliated with SoFi.",
   "author": {

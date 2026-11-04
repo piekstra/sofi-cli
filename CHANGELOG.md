@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.6 — 2026-11-03
+
+Built on cli-common v0.27.0.
+
+- `sofi_transactions` and `sofi_documents` page by position, so a row that arrives between pages
+  repeats nothing and skips nothing. Rows of the same day now run in a fixed order of their own. A
+  cursor from an earlier version still works, as the count of rows it holds.
+- A 404 names the URL without its query.
+- On Windows, a session too long for one credential is split and read back as one.
+
 ## v0.3.5 — 2026-11-03
 
 - A password or a code is no longer re-sent to another host. On a 307 or 308 reqwest

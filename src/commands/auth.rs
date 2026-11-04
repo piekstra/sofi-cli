@@ -516,7 +516,7 @@ fn run_logout(
     }
     let what_remains = remains
         .iter()
-        .map(|(what, e)| format!("{what}: {}", inner_message(e)))
+        .map(|(what, e)| format!("{what}: {}", e.message()))
         .collect::<Vec<_>>()
         .join("; ");
     // Only the profile left needs no `--forget`: the credentials are gone by then.
@@ -549,19 +549,6 @@ fn run_logout(
         CliError::Keychain(_) | CliError::Other(_) => CliError::Other(message),
         other => crate::browser::rewording(other, |_| message),
     })
-}
-
-/// An error's own message, without the kind its `Display` puts in front.
-fn inner_message(err: &CliError) -> &str {
-    match err {
-        CliError::Usage(m)
-        | CliError::Auth(m)
-        | CliError::NotFound(m)
-        | CliError::Upstream(m)
-        | CliError::ConfirmationRequired(m)
-        | CliError::Keychain(m)
-        | CliError::Other(m) => m,
-    }
 }
 
 pub fn set_credential(common: &CommonArgs, args: &SetCredentialArgs) -> Result<(), CliError> {
