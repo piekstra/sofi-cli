@@ -382,6 +382,56 @@ fn detailed_transactions_add_their_ids() {
 /// As in `transactions list`: a row SoFi sent with no readable date is kept
 /// in every window, after the dated ones, since losing it is the worse
 /// failure.
+/// A page boundary falls inside a day, and a transaction posts before the next page. A cursor holds
+/// no state at SoFi, so a second set of fixtures stands for the later read.
+#[test]
+fn a_transaction_that_posts_between_pages_repeats_nothing_and_skips_nothing() {
+    let row = |id: &str, date: &str| entry(id, Some(date), "-5.00", "WITHDRAWAL", "Sample Coffee");
+    let with_rows = |rows: Vec<Value>| {
+        with(|f| {
+            f.feeds.insert(CHECKING.to_string(), rows.clone());
+            f.feeds.retain(|k, _| k == CHECKING);
+        })
+    };
+    let before = vec![
+        row("d", "2026-07-04"),
+        row("c", "2026-07-03"),
+        row("b", "2026-07-03"),
+        row("a", "2026-07-01"),
+    ];
+    let mut after = vec![row("e", "2026-07-05")];
+    after.extend(before.clone());
+    let args = json!({"since": "2026-07-01", "until": "2026-07-31", "limit": 2,
+                      "response_format": "detailed"});
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let tools = with_rows(before);
+    let answer = call(&tools, TRANSACTIONS_TOOL, args.clone());
+    let first = assert_fits(&tools, TRANSACTIONS_TOOL, &answer);
+    let mut seen = ids(first);
+    assert_eq!(seen[0], "d");
+    let later = with_rows(after);
+    let mut cursor = first["next_cursor"].clone();
+    while cursor.is_string() {
+        let mut next = args.clone();
+        next["cursor"] = cursor;
+        let answer = call(&later, TRANSACTIONS_TOOL, next);
+        let page = assert_fits(&later, TRANSACTIONS_TOOL, &answer);
+        seen.extend(ids(page));
+        cursor = page["next_cursor"].clone();
+    }
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["a", "b", "c", "d"], "{seen:?}");
+}
+
 #[test]
 fn an_undated_transaction_is_kept_and_listed_last() {
     let t = with(|f| {
@@ -632,9 +682,9 @@ fn an_auth_error_keeps_its_reason_and_drops_the_cli_s_remedy() {
         ("the cached session could not be read (bad json) — run `sfi auth login` again", "the cached session could not be read (bad json)"),
         ("the GraphQL BFF answered HTML (HTTP 401) — the session has probably lapsed; run `sfi auth login --browser`", "the GraphQL BFF answered HTML (HTTP 401) — the session has probably lapsed"),
     ] {
-        assert_eq!(auth_reason(message), reason);
+        assert_eq!(tool_err(CliError::Auth(message.into())).message(), reason);
     }
-    assert_eq!(auth_reason("401"), "401");
+    assert_eq!(tool_err(CliError::Auth("401".into())).message(), "401");
 }
 
 #[test]

@@ -233,6 +233,7 @@ pub fn rewording(err: CliError, reword: impl FnOnce(String) -> String) -> CliErr
         CliError::ConfirmationRequired(m) => CliError::ConfirmationRequired(reword(m)),
         CliError::Keychain(m) => CliError::Keychain(reword(m)),
         CliError::Other(m) => CliError::Other(reword(m)),
+        detailed @ CliError::Detailed(_) => rewording(detailed.into_base(), reword),
     }
 }
 

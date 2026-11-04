@@ -163,3 +163,5 @@ $ op read 'op://Private/sofi/password' \
 `sfi auth logout --forget` removes the password, session, device id, and any
 parked login from the keychain. Plain `sfi auth logout` removes the session and
 any parked login. Both also remove the kept browser profile.
+On Windows, whose Credential Manager holds 2,560 bytes per credential, a longer value is stored across several credentials with the suffix `.pk-split-` and read back whole. After a downgrade, run `sfi auth logout --forget` again from a current build: an older build's logout leaves the parts.
+

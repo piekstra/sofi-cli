@@ -22,7 +22,8 @@ use std::sync::Mutex;
 
 use pk_cli_core::{dates, CliError, CommonArgs, Money};
 use pk_cli_mcp::{
-    parse_args, ListArgs, Page, PageRequest, Server, ToolDef, ToolError, ToolOutput, Toolset,
+    parse_args, ListArgs, Order, Page, PageRequest, PositionKey, PositionRequest, Server, ToolDef,
+    ToolError, ToolOutput, Toolset,
 };
 use pk_cli_secrets::CredentialStore;
 use schemars::JsonSchema;
@@ -132,22 +133,11 @@ impl<S: Source> SofiTools<S> {
 /// A provider failure as a tool error; a sign-in failure names the browser
 /// login.
 fn tool_err(e: CliError) -> ToolError {
-    match e {
-        CliError::Auth(m) => ToolError::auth(auth_reason(&m)).with_fix(SIGN_IN),
-        other => other.into(),
+    if e.is_auth() {
+        ToolError::from(e).with_fix(SIGN_IN)
+    } else {
+        e.into()
     }
-}
-
-/// Why the read was refused, without the CLI's own remedy (a closing "run
-/// `sfi auth login`"): the fix names the one command to ask for, and a
-/// second, often different, command in the same error would leave the user
-/// to pick.
-fn auth_reason(m: &str) -> &str {
-    [" — run `", "; run `"]
-        .iter()
-        .filter_map(|sep| m.find(sep))
-        .min()
-        .map_or(m, |cut| &m[..cut])
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -444,7 +434,7 @@ impl<S: Source> SofiTools<S> {
         )?;
         let account = non_empty(args.account.as_deref());
         let kind = non_empty(args.kind.as_deref());
-        let page = PageRequest::new(
+        let page = PositionRequest::new(
             &args.list,
             &TransactionsFilter {
                 since: &since,
@@ -458,7 +448,7 @@ impl<S: Source> SofiTools<S> {
         let rows = self.source.accounts().await.map_err(tool_err)?;
         let open = open_accounts(&rows);
         let mut complete = true;
-        let mut matched: Vec<TransactionItem> = Vec::new();
+        let mut matched: Vec<(PositionKey, TransactionItem)> = Vec::new();
         for acct in pick(&open, account)? {
             let (txns, capped) = self.settled(&acct.id, &since).await?;
             complete &= !capped;
@@ -477,7 +467,11 @@ impl<S: Source> SofiTools<S> {
                 {
                     continue;
                 }
-                matched.push(TransactionItem {
+                let key = PositionKey::new(
+                    tx.date.as_deref().unwrap_or_default(),
+                    &format!("{}:{}", acct.id, tx.id),
+                );
+                let item = TransactionItem {
                     date: tx.date,
                     description: tx.description,
                     amount: tx.amount.map(|m| m.amount),
@@ -485,17 +479,16 @@ impl<S: Source> SofiTools<S> {
                     merchant: tx.merchant,
                     account: acct.name.clone(),
                     id: detailed.then_some(tx.id),
-                });
+                };
+                matched.push((key, item));
             }
         }
-        // Newest first across accounts, undated last; a stable sort keeps
-        // SoFi's order within a day.
-        matched.sort_by(|a, b| b.date.cmp(&a.date));
+        // Newest first across accounts, undated last.
         ToolOutput::new(&TransactionsOut {
             since,
             until,
             complete,
-            page: page.page(matched, "since/until, account or type")?,
+            page: page.page(matched, Order::Descending, "since/until, account or type")?,
         })
     }
 
@@ -569,7 +562,7 @@ impl<S: Source> SofiTools<S> {
                 )));
             }
         }
-        let page = PageRequest::new(
+        let page = PositionRequest::new(
             &args.list,
             &DocumentsFilter {
                 since: since.as_deref(),
@@ -580,7 +573,7 @@ impl<S: Source> SofiTools<S> {
         let ranged = since.is_some() || until.is_some();
 
         let rows = self.source.statements().await.map_err(tool_err)?;
-        let mut matched: Vec<DocumentItem> = rows
+        let matched = rows
             .iter()
             .filter_map(documents::to_document)
             // As `documents list`: an undated statement only when no range
@@ -592,15 +585,18 @@ impl<S: Source> SofiTools<S> {
                 }
                 None => !ranged,
             })
-            .map(|d| DocumentItem {
-                date: d.date,
-                name: d.name,
-                id: detailed.then_some(d.id),
+            .map(|d| {
+                let key = PositionKey::new(d.date.as_deref().unwrap_or_default(), &d.id);
+                let item = DocumentItem {
+                    date: d.date,
+                    name: d.name,
+                    id: detailed.then_some(d.id),
+                };
+                (key, item)
             })
             .collect();
-        matched.sort_by(|a, b| b.date.cmp(&a.date));
         ToolOutput::new(&DocumentsOut {
-            page: page.page(matched, "since/until")?,
+            page: page.page(matched, Order::Descending, "since/until")?,
         })
     }
 
