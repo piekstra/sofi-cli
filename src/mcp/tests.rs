@@ -379,9 +379,6 @@ fn detailed_transactions_add_their_ids() {
     );
 }
 
-/// As in `transactions list`: a row SoFi sent with no readable date is kept
-/// in every window, after the dated ones, since losing it is the worse
-/// failure.
 /// A page boundary falls inside a day, and a transaction posts before the next page. A cursor holds
 /// no state at SoFi, so a second set of fixtures stands for the later read.
 #[test]
@@ -432,6 +429,9 @@ fn a_transaction_that_posts_between_pages_repeats_nothing_and_skips_nothing() {
     assert_eq!(sorted, ["a", "b", "c", "d"], "{seen:?}");
 }
 
+/// As in `transactions list`: a row SoFi sent with no readable date is kept
+/// in every window, after the dated ones, since losing it is the worse
+/// failure.
 #[test]
 fn an_undated_transaction_is_kept_and_listed_last() {
     let t = with(|f| {

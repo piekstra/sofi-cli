@@ -1610,7 +1610,6 @@ mod tests {
         );
     }
 
-    /// A 403 that is not HTML names both causes, and stays exit 3.
     #[test]
     fn a_404_names_the_url_without_its_query() {
         let err =
@@ -1620,6 +1619,7 @@ mod tests {
         assert!(!err.to_string().contains("dummy"), "{err}");
     }
 
+    /// A 403 that is not HTML names both causes, and stays exit 3.
     #[test]
     fn a_403_that_is_not_html_names_both_causes() {
         let err = classify_status(403, "https://x/y", &Value::Null).unwrap();
