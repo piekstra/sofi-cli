@@ -1,9 +1,9 @@
 # Contributing to sofi-cli
 
 Thanks for your interest! Contributions — bug reports, fixes, new commands,
-docs — are welcome under the project's dual [MIT](LICENSE-MIT) /
-[Apache-2.0](LICENSE-APACHE) license: by opening a pull request you agree your
-contribution is licensed under those same terms.
+docs — are welcome under the project's [AGPL-3.0-only](LICENSE) license: by
+opening a pull request you agree your contribution is licensed under those same
+terms.
 
 ## Ground rules (this reads a real household's bank accounts)
 
